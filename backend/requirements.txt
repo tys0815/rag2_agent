@@ -1,0 +1,23 @@
+# 核心依赖
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+
+# MCP 服务集成
+fastmcp>=2.0.0
+
+# 向量数据库 (可选)
+qdrant-client>=1.6.0
+neo4j>=5.0.0
+
+# 其他工具
+requests>=2.31.0
+numpy>=1.24.0
+pandas>=2.0.0  # 可选，用于数据处理
+
+# 开发依赖
+pytest>=7.4.0
+black>=23.0.0
+flake8>=6.0.0

@@ -176,20 +176,27 @@ const handleFileSelect = async (e: Event) => {
       // 构建 FormData
       const formData = new FormData();
       formData.append('file', file); // 后端接收的字段名
+      formData.append('namespace', 'uid_12345'); // 示例命名空间，实际可根据需求动态生成
+      formData.append('agent_id', 'uid_12345');
+      formData.append('session_id', `session_${Date.now()}`);
 
       // 发送上传请求
-      const response = await fetch(`${apiUrl.value}ingest/file`, {
+      // const response = await fetch(`${apiUrl.value}ingest/file`, {
+      //   method: 'POST',
+      //   body: formData, 
+      // });
+      const response = await fetch(`${apiUrl.value}new_update_file/new_update_file`, {
         method: 'POST',
         body: formData, 
       });
 
       if (!response.ok) throw new Error(`文件 ${file.name} 上传失败`);
 
-      console.log(`文件 ${file.name} 上传成功`);
+      console.log(`文件 ${file.name} 上传成功`); 
     }
 
     // 上传成功后刷新列表
-    await fetchFileList();
+    // await fetchFileList();
     alert('文件上传成功！');
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "文件上传失败";

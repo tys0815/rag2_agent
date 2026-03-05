@@ -76,7 +76,7 @@ import { storeToRefs } from 'pinia';
 
 // 初始化 Pinia store
 const appStore = useAppStore();
-const { system_prompt, llmModel, apiUrl, KnowledgeBaseItem } = storeToRefs(appStore);
+const { system_prompt, llmModel, apiUrl, KnowledgeBaseItem, currentView } = storeToRefs(appStore);
 
 // 计算属性：监听当前选中的历史记录（响应式更新）
 const currentHistory = computed(() => appStore.getCurrentHistory);
@@ -103,7 +103,85 @@ const escapeHtml = (str: string) => {
 
 // 发送消息
 const sendMessage = async () => {
-  const history = currentHistory.value;
+   let newChat = true;
+  if (newChat) {
+    const history = currentHistory.value;
+    console.log('!!!!!!!', history);
+    if (!messageInput.value.trim() || !currentHistory.value || isLoading.value) return;
+
+    // 1. 构建用户消息
+    const userMessage: Message = {
+      role: 'user',
+      content: escapeHtml(messageInput.value.trim())
+    };
+    const newMessage: string = messageInput.value.trim();
+    // 2. 清空输入框
+    messageInput.value = '';
+
+    // 3. 追加用户消息到当前历史记录
+    appStore.appendMessageToHistory(history.id, userMessage);
+
+    // 4. 初始化助手消息（用于流式更新）
+    const assistantMessage: Message = {
+      role: 'system',
+      content: ''
+    };
+    isLoading.value = true;
+    let messageId = '';
+    // 追加空的助手消息到历史记录
+    messageId = appStore.appendMessageToHistory(currentHistory.value.id, assistantMessage);
+
+    // 根据当前视图选择API端点
+    let apiEndpoint = '';
+    let requestBody = {};
+    currentView.value = 'travelModel'; // 模拟切换到旅游路线规划视图
+    if (currentView.value === 'travelModel') {
+      // 旅游路线规划API
+      apiEndpoint = 'travel/chat';
+      requestBody = {
+        text: newMessage,
+        user_id: 'user_12345',
+        agent_id: 'travel_planner',
+        session_id: `travel_session_${Date.now()}`,
+        enable_memory: true,
+        max_context_length: 2000
+      };
+    } else {
+      // 默认聊天API
+      apiEndpoint = 'new_chat/completions';
+      requestBody = {
+        text: newMessage,
+        namespace: 'uid_12345',
+        agent_id: 'agent_001',
+        session_id: `session_${Date.now()}`,
+      };
+    }
+
+    const response = await fetch(`${apiUrl.value}${apiEndpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    });
+    console.log('!!!!!!!', response);
+    if (!response.status || response.status !== 200) {
+      throw new Error(`API 响应错误: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+   
+    // 更新store中的消息内容
+    const responseText = data.data || data.response || data;
+    appStore.updateMessageContent(currentHistory.value.id, messageId, responseText);
+    // 滚动到底部
+    await nextTick();
+    chatContainer.value?.scrollTo({
+      top: chatContainer.value.scrollHeight,
+      behavior: 'smooth'
+    });
+   
+  }else{
+    const history = currentHistory.value;
   console.log('!!!!!!!', history);
   if (!messageInput.value.trim() || !currentHistory.value || isLoading.value) return;
 
@@ -317,5 +395,7 @@ const sendMessage = async () => {
     // 重置加载状态
     isLoading.value = false;
   }
+  }
+ 
 };
 </script>

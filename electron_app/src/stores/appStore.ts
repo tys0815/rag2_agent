@@ -49,10 +49,11 @@ export const useAppStore = defineStore('app', {
     llmModel: 'llama3.2:3b',
     system_prompt: '你是一个可爱、友好、充满童趣的AI助手，回答要轻松有趣，多用emoji和可爱的语气，始终保持耐心和热情。',
     code: 'PGPT-TvzqMtT0yt9P-RTd59+IWzndI-Utr4y1biCVpt-VYDxUFxBNoKn-jA66px+715Fd-HgQEYkKDyP4l-9DjJqoSfz26F-8vQ9WWGA5xXf-cCnwpWbXZ+8Y-RTNULwBdlcWb-v08Sh/x6EUtO-QKl4J1wpp1xm-DDPIayJIP7Up-zPzTGyCTBRFG-eQPG3tNXzYii-PekXFGXndXYj-++zJ8IQrARoe-OwG3AxV5Ib1x-y6r54/ONT0GM-xHM8tuGXMDI/-qBkPI3rlBVG9-t/72XFtfYidI-c2hhjOuclNkC-upxoCBveiFka-W5oy95JCwQfu-mPqmfvxaPtfc-cy4LZH67CEIt-bY0UxolR6chd-grKOtI4mioIN-gtjrmSuJZQRY-O7fqWuDGFod0-fYg9aMkZyuNv-8XWrY98JlDic-MxqP3OmB2GMX-/wer1jHUJrpW-j5jzVDmvg394-339p5fWMfXgz-kfO1Gt01WnD/-4UVnby2k0XOV-cIq6MihHRruJ-SHXv/3cbnjce-Px3eTOdtzsUB-PquoPxcJhI+Q-iqSCXcYcnBck-qAy/Mg==',
-    currentView: 'llmModel', 
+    currentView: 'travelModel', 
     currentHistoryId: '1',
     chatList: [
       { title: "新对话", icon: "fa-comments", key: "llmModel" },
+      { title: "旅游路线规划", icon: "fa-map-marker", key: "travelModel" },
       { title: "语音生成", icon: "fa-microphone", key: "soulModel" },
       { title: "图像生成", icon: "fa-picture-o", key: "imgModel" },
       { title: "视频生成", icon: "fa-film", key: "vidolModel" }

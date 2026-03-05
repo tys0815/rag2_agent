@@ -17,7 +17,7 @@
       <!-- 右侧功能区（根据currentView渲染对应组件） -->
       <main class="flex-1 overflow-hidden">
         <!-- 聊天视图 -->
-        <ChatView v-if="appStore.currentView === 'llmModel'" />
+        <ChatView v-if="appStore.currentView === 'llmModel' || appStore.currentView === 'travelModel'" />
         <!-- 语音生成视图 -->
         <VoiceView v-if="appStore.currentView === 'soulModel'" />
         <!-- 图像生成视图 -->

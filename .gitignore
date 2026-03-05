@@ -64,3 +64,4 @@ backend/cache/
 backend/backend_app/tmp/
 backend/local_kg_data/
 backend/local_data/
+backend/knowledge_base/
