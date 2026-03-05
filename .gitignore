@@ -65,3 +65,7 @@ backend/backend_app/tmp/
 backend/local_kg_data/
 backend/local_data/
 backend/knowledge_base/
+1.6.0
+5.0.0
+.claude/settings.local.json
+.vscode/launch.json
