@@ -371,7 +371,7 @@ class SemanticMemory(BaseMemory):
 
     def _graph_search(self, query: str, limit: int, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
-            query_entities = self._extract_entities(query)
+            query_entities = self._extract_entities(query,user_id)
             if not query_entities:
                 return []
 

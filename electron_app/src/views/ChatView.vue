@@ -76,7 +76,7 @@ import { storeToRefs } from 'pinia';
 
 // 初始化 Pinia store
 const appStore = useAppStore();
-const { system_prompt, llmModel, apiUrl, KnowledgeBaseItem, currentView } = storeToRefs(appStore);
+const { system_prompt, llmModel, apiUrl, KnowledgeBaseItem,currentView } = storeToRefs(appStore);
 
 // 计算属性：监听当前选中的历史记录（响应式更新）
 const currentHistory = computed(() => appStore.getCurrentHistory);
@@ -104,9 +104,10 @@ const escapeHtml = (str: string) => {
 // 发送消息
 const sendMessage = async () => {
    let newChat = true;
+  //  appStore.resetCache();
   if (newChat) {
     const history = currentHistory.value;
-    console.log('!!!!!!!', history);
+    console.log('!!!!!!!', currentView.value);
     if (!messageInput.value.trim() || !currentHistory.value || isLoading.value) return;
 
     // 1. 构建用户消息
@@ -131,31 +132,14 @@ const sendMessage = async () => {
     // 追加空的助手消息到历史记录
     messageId = appStore.appendMessageToHistory(currentHistory.value.id, assistantMessage);
 
-    // 根据当前视图选择API端点
-    let apiEndpoint = '';
-    let requestBody = {};
-    currentView.value = 'travelModel'; // 模拟切换到旅游路线规划视图
-    if (currentView.value === 'travelModel') {
-      // 旅游路线规划API
-      apiEndpoint = 'travel/chat';
-      requestBody = {
-        text: newMessage,
-        user_id: 'user_12345',
-        agent_id: 'travel_planner',
-        session_id: `travel_session_${Date.now()}`,
-        enable_memory: true,
-        max_context_length: 2000
-      };
-    } else {
-      // 默认聊天API
-      apiEndpoint = 'new_chat/completions';
-      requestBody = {
-        text: newMessage,
-        namespace: 'uid_12345',
-        agent_id: 'agent_001',
-        session_id: `session_${Date.now()}`,
-      };
-    }
+    // 默认聊天API (llmModel)
+    const apiEndpoint = 'new_chat/completions';
+    const requestBody = {
+      text: newMessage,
+      namespace: 'uid_12345',
+      agent_id: 'agent_001',
+      session_id: `session_${Date.now()}`,
+    };
 
     const response = await fetch(`${apiUrl.value}${apiEndpoint}`, {
       method: 'POST',

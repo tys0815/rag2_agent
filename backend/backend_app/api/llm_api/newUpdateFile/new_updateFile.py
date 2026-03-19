@@ -30,24 +30,25 @@ async def new_update_file(
     namespace: str = Form(..., description="知识库命名空间")
     
 ) -> dict:
+    
+    rag_tool: RAGTool = global_registry.get_tool("rag")
     # rag_tool.run({
     #     "action": 'clear',
     #     "confirm": True, 
     #     "namespace": namespace
     # })
-    rag_tool: RAGTool = global_registry.get_tool("rag")
     memory_tool: MemoryTool = global_registry.get_tool("memory")
     #
-    memory_tool.run({
-        "action": "stats",
-        "user_id": namespace
-    })
+    # memory_tool.run({
+    #     "action": "stats",
+    #     "user_id": namespace
+    # })
 
     #
     file_path = await get_file_path_from_upload_async(file, namespace=namespace, save_dir="./knowledge_base")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        # result = rag_tool.add_document(file_path, namespace=namespace)
+        result = rag_tool.add_document(file_path, namespace=namespace)
         memory_tool.run({
             "action": "add",
             "user_id": namespace,
@@ -55,7 +56,7 @@ async def new_update_file(
             "content": f"{now} 用户{namespace}已上传文件：{file.filename}，存储路径：{file_path}"
         })
         # print(f"✅ 文件上传结果: {"result"}")
-        return {"success": True, "data": "result"}
+        return {"success": True, "data": result}
     except Exception as e:
         memory_tool.run({
             "action": "add",

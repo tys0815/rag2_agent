@@ -17,7 +17,13 @@
       <!-- 右侧功能区（根据currentView渲染对应组件） -->
       <main class="flex-1 overflow-hidden">
         <!-- 聊天视图 -->
-        <ChatView v-if="appStore.currentView === 'llmModel' || appStore.currentView === 'travelModel'" />
+        <ChatView v-if="appStore.currentView === 'llmModel'" />
+        <!-- 旅游路线规划视图 -->
+        <TravelView v-if="appStore.currentView === 'travelModel'" />
+        <!-- GEO优化助手视图 -->
+        <GeoView v-if="appStore.currentView === 'geoModel'" />
+        <!-- 全能企业级助手视图 -->
+        <UniversalView v-if="appStore.currentView === 'universalModel'" />
         <!-- 语音生成视图 -->
         <VoiceView v-if="appStore.currentView === 'soulModel'" />
         <!-- 图像生成视图 -->
@@ -37,6 +43,9 @@ import { useAppStore } from './stores/appStore';
 import Header from './components/Header.vue';
 import Footer from './components/Footer.vue';
 import ChatView from './views/ChatView.vue';
+import TravelView from './views/TravelView.vue';
+import GeoView from './views/GeoView.vue';
+import UniversalView from './views/UniversalView.vue';
 import VoiceView from './views/VoiceView.vue';
 import ImageView from './views/ImageView.vue';
 import VideoView from './views/VideoView.vue';

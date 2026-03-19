@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Iterator, Optional, Union, TYPE_CHECKING, Any, Dict
+import logging
+from typing import Iterator, Optional, Union, TYPE_CHECKING, Any, Dict, Callable
 
 from ..core.agent import Agent
 from ..core.config import Config
@@ -12,6 +13,8 @@ from ..core.message import Message
 
 if TYPE_CHECKING:
     from ..tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def _map_parameter_type(param_type: str) -> str:
@@ -35,12 +38,14 @@ class FunctionCallAgent(Agent):
         enable_tool_calling: bool = True,
         default_tool_choice: Union[str, dict] = "auto",
         max_tool_iterations: int = 3,
+        tool_call_listener: Optional[Callable[[dict[str, Any]], None]] = None,
     ):
         super().__init__(name, llm, system_prompt, config)
         self.tool_registry = tool_registry
         self.enable_tool_calling = enable_tool_calling and tool_registry is not None
         self.default_tool_choice = default_tool_choice
         self.max_tool_iterations = max_tool_iterations
+        self._tool_call_listener = tool_call_listener
 
     def _get_system_prompt(self) -> str:
         """构建系统提示词，注入工具描述"""
@@ -202,26 +207,58 @@ class FunctionCallAgent(Agent):
 
     def _execute_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """执行工具调用并返回字符串结果"""
+        logger.info(f"[TOOL EXECUTION] 开始执行工具调用 - 工具名称: {tool_name}, 参数数量: {len(arguments)}")
         if not self.tool_registry:
+            logger.error("[TOOL EXECUTION] 错误：未配置工具注册表")
             return "❌ 错误：未配置工具注册表"
 
-        tool = self.tool_registry.get_tool(tool_name)
-        if tool:
-            try:
+        result = ""
+        parsed_arguments = arguments.copy()
+        success = False
+
+        try:
+            tool = self.tool_registry.get_tool(tool_name)
+            if tool:
+                logger.info(f"[TOOL EXECUTION] 找到Tool对象: {tool_name}")
                 typed_arguments = self._convert_parameter_types(tool_name, arguments)
-                return tool.run(typed_arguments)
-            except Exception as exc:
-                return f"❌ 工具调用失败：{exc}"
+                logger.debug(f"[TOOL EXECUTION] 参数类型转换完成 - 原始参数: {arguments}, 转换后: {typed_arguments}")
+                result = tool.run(typed_arguments)
+                parsed_arguments = typed_arguments
+                success = "❌" not in result and "错误：" not in result and "失败" not in result
+                logger.info(f"[TOOL EXECUTION] Tool执行完成 - 成功: {success}, 结果长度: {len(result)}")
+            else:
+                func = self.tool_registry.get_function(tool_name)
+                if func:
+                    logger.info(f"[TOOL EXECUTION] 找到函数工具: {tool_name}")
+                    input_text = arguments.get("input", "")
+                    result = func(input_text)
+                    success = "❌" not in result and "错误：" not in result and "失败" not in result
+                    logger.info(f"[TOOL EXECUTION] 函数工具执行完成 - 成功: {success}, 结果长度: {len(result)}")
+                else:
+                    logger.error(f"[TOOL EXECUTION] 未找到工具: {tool_name}")
+                    result = f"❌ 错误：未找到工具 '{tool_name}'"
+        except Exception as exc:
+            logger.error(f"[TOOL EXECUTION] 工具调用异常 - 工具: {tool_name}, 异常: {exc}")
+            result = f"❌ 工具调用失败：{exc}"
+            success = False
 
-        func = self.tool_registry.get_function(tool_name)
-        if func:
+        # 通知监听器
+        if self._tool_call_listener:
             try:
-                input_text = arguments.get("input", "")
-                return func(input_text)
-            except Exception as exc:
-                return f"❌ 工具调用失败：{exc}"
+                logger.debug("[TOOL EXECUTION] 调用工具调用监听器")
+                self._tool_call_listener({
+                    "agent_name": self.name,
+                    "tool_name": tool_name,
+                    "raw_arguments": arguments,  # 原始参数字典
+                    "parsed_arguments": parsed_arguments,  # 转换后的参数
+                    "result": result,
+                    "success": success
+                })
+            except Exception as e:
+                logger.warning(f"工具调用监听器失败: {e}")
 
-        return f"❌ 错误：未找到工具 '{tool_name}'"
+        logger.info(f"[TOOL EXECUTION] 工具调用执行结束 - 工具: {tool_name}, 成功: {success}")
+        return result
 
     def _invoke_with_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: Union[str, dict], **kwargs):
         """调用底层OpenAI客户端执行函数调用"""
@@ -253,9 +290,11 @@ class FunctionCallAgent(Agent):
         """
         执行函数调用范式的对话流程
         """
+        logger.info(f"[FUNCTION CALL AGENT] 开始执行 - 输入长度: {len(input_text)}")
         messages: list[dict[str, Any]] = []
         system_prompt = self._get_system_prompt()
         messages.append({"role": "system", "content": system_prompt})
+        logger.info(f"[FUNCTION CALL AGENT] 系统提示词长度: {len(system_prompt)}")
 
         for msg in self._history:
             messages.append({"role": msg.role, "content": msg.content})
@@ -263,19 +302,26 @@ class FunctionCallAgent(Agent):
         messages.append({"role": "user", "content": input_text})
 
         tool_schemas = self._build_tool_schemas()
+        logger.info(f"[FUNCTION CALL AGENT] 构建工具模式 - 可用工具数量: {len(tool_schemas)}")
         if not tool_schemas:
+            logger.info("[FUNCTION CALL AGENT] 无可用工具，直接调用LLM")
             response_text = self.llm.invoke(messages, **kwargs)
             self.add_message(Message(input_text, "user"))
             self.add_message(Message(response_text, "assistant"))
+            logger.info(f"[FUNCTION CALL AGENT] 直接LLM响应长度: {len(response_text)}")
             return response_text
 
         iterations_limit = max_tool_iterations if max_tool_iterations is not None else self.max_tool_iterations
         effective_tool_choice: Union[str, dict] = tool_choice if tool_choice is not None else self.default_tool_choice
 
+        logger.info(f"[FUNCTION CALL AGENT] 迭代设置 - 最大迭代次数: {iterations_limit}, 工具选择策略: {effective_tool_choice}")
+
         current_iteration = 0
         final_response = ""
 
+        logger.info(f"[FUNCTION CALL AGENT] 开始工具调用迭代循环 (当前迭代: {current_iteration}/{iterations_limit})")
         while current_iteration < iterations_limit:
+            logger.info(f"[FUNCTION CALL AGENT] 迭代 {current_iteration + 1}/{iterations_limit} - 调用LLM进行工具选择")
             response = self._invoke_with_tools(
                 messages,
                 tools=tool_schemas,
@@ -287,8 +333,10 @@ class FunctionCallAgent(Agent):
             assistant_message = choice.message
             content = self._extract_message_content(assistant_message.content)
             tool_calls = list(assistant_message.tool_calls or [])
+            logger.info(f"[FUNCTION CALL AGENT] LLM响应 - 内容长度: {len(content)}, 工具调用数量: {len(tool_calls)}")
 
             if tool_calls:
+                logger.info(f"[FUNCTION CALL AGENT] 检测到工具调用 - 将执行 {len(tool_calls)} 个工具调用")
                 assistant_payload: dict[str, Any] = {"role": "assistant", "content": content}
                 assistant_payload["tool_calls"] = []
 
@@ -305,10 +353,12 @@ class FunctionCallAgent(Agent):
                     )
                 messages.append(assistant_payload)
 
-                for tool_call in tool_calls:
+                for i, tool_call in enumerate(tool_calls):
                     tool_name = tool_call.function.name
                     arguments = self._parse_function_call_arguments(tool_call.function.arguments)
+                    logger.info(f"[FUNCTION CALL AGENT] 执行工具调用 {i+1}/{len(tool_calls)}: {tool_name}, 参数长度: {len(str(arguments))}")
                     result = self._execute_tool_call(tool_name, arguments)
+                    logger.info(f"[FUNCTION CALL AGENT] 工具调用 {tool_name} 完成 - 结果长度: {len(result)}")
                     messages.append(
                         {
                             "role": "tool",
@@ -319,13 +369,16 @@ class FunctionCallAgent(Agent):
                     )
 
                 current_iteration += 1
+                logger.info(f"[FUNCTION CALL AGENT] 迭代 {current_iteration}/{iterations_limit} 完成，继续下一轮迭代")
                 continue
 
             final_response = content
+            logger.info(f"[FUNCTION CALL AGENT] 无工具调用，获取最终响应 - 长度: {len(final_response)}")
             messages.append({"role": "assistant", "content": final_response})
             break
 
         if current_iteration >= iterations_limit and not final_response:
+            logger.info(f"[FUNCTION CALL AGENT] 达到最大迭代次数 ({iterations_limit}) 但无最终响应，强制调用LLM生成最终答案")
             final_choice = self._invoke_with_tools(
                 messages,
                 tools=tool_schemas,
@@ -333,10 +386,12 @@ class FunctionCallAgent(Agent):
                 **kwargs,
             )
             final_response = self._extract_message_content(final_choice.choices[0].message.content)
+            logger.info(f"[FUNCTION CALL AGENT] 强制生成的最终响应长度: {len(final_response)}")
             messages.append({"role": "assistant", "content": final_response})
 
         self.add_message(Message(input_text, "user"))
         self.add_message(Message(final_response, "assistant"))
+        logger.info(f"[FUNCTION CALL AGENT] 执行完成 - 总迭代次数: {current_iteration}, 最终响应长度: {len(final_response)}")
         return final_response
 
     def add_tool(self, tool) -> None:

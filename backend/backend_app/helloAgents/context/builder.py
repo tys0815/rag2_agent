@@ -83,7 +83,8 @@ class ContextBuilder:
         user_query: str,
         conversation_history: Optional[List[Message]] = None,
         system_instructions: Optional[str] = None,
-        additional_packets: Optional[List[ContextPacket]] = None
+        additional_packets: Optional[List[ContextPacket]] = None,
+        **kwargs
     ) -> str:
         """构建完整上下文
         
@@ -101,7 +102,8 @@ class ContextBuilder:
             user_query=user_query,
             conversation_history=conversation_history or [],
             system_instructions=system_instructions,
-            additional_packets=additional_packets or []
+            additional_packets=additional_packets or [],
+            **kwargs
         )
         
         # 2. Select: 筛选与排序
@@ -124,7 +126,8 @@ class ContextBuilder:
         user_query: str,
         conversation_history: List[Message],
         system_instructions: Optional[str],
-        additional_packets: List[ContextPacket]
+        additional_packets: List[ContextPacket],
+        **kwargs
     ) -> List[ContextPacket]:
         """Gather: 收集候选信息"""
         packets = []
@@ -139,25 +142,17 @@ class ContextBuilder:
         # P1: 从记忆中获取任务状态与关键结论
         if self.memory_tool:
             try:
-                # 搜索任务状态相关记忆
-                state_results = self.memory_tool.execute(
-                    "search",
-                    query="(任务状态 OR 子目标 OR 结论 OR 阻塞)",
-                    min_importance=0.7,
-                    limit=5
-                )
-                if state_results and "未找到" not in state_results:
-                    packets.append(ContextPacket(
-                        content=state_results,
-                        metadata={"type": "task_state", "importance": "high"}
-                    ))
-                
                 # 搜索与当前查询相关的记忆
-                related_results = self.memory_tool.execute(
-                    "search",
-                    query=user_query,
-                    limit=5
-                )
+                related_results = self.memory_tool.run({
+                    "action": "search",
+                    "query": user_query,
+                    "limit": 5,
+                    "min_importance": 0.5,  # 只关注重要的记忆
+                    "user_id": kwargs.get("user_id"),  # 传入用户ID以获取个性化记忆
+                    "agent_id": kwargs.get("agent_id"),  # 传入Agent ID以区分不同助手的记忆
+                    "session": kwargs.get("session_id"),  # 传入会话ID以区分不同会话的记忆
+                    "memory_type": "semantic"  # 只获取与当前查询相关的记忆
+                })
                 if related_results and "未找到" not in related_results:
                     packets.append(ContextPacket(
                         content=related_results,
@@ -172,7 +167,12 @@ class ContextBuilder:
                 rag_results = self.rag_tool.run({
                     "action": "search",
                     "query": user_query,
-                    "limit": 5
+                    "limit": 5,
+                    "user_id": kwargs.get("user_id"),  # 传入用户ID以获取个性化记忆
+                    "agent_id": kwargs.get("agent_id"),  # 传入Agent ID以区分不同助手的记忆
+                    "session": kwargs.get("session_id"),  # 传入会话ID以区分不同会话的记忆
+                    "namespace": kwargs.get("namespace"),  # 传入命名空间以区分不同领域的知识库
+                    "min_score": 0.6  # 只关注相关性较高的结果
                 })
                 if rag_results and "未找到" not in rag_results and "错误" not in rag_results:
                     packets.append(ContextPacket(

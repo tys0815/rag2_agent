@@ -4,8 +4,10 @@ import hashlib
 import sqlite3
 import time
 import json
+import functools
 from ..embedding import get_text_embedder, get_dimension
 from ..storage.qdrant_store import QdrantVectorStore
+from ..storage.load_balancer import LoadBalancedVectorStore, LoadBalanceStrategy
 
 
 def _get_markitdown_instance():
@@ -632,9 +634,11 @@ def index_chunks(
         raise RuntimeError("Failed to index vectors to Qdrant")
 
 
+@functools.lru_cache(maxsize=1000)
 def embed_query(query: str) -> List[float]:
     """
     Embed query using unified embedding (百炼 with fallback).
+    Cache with LRU strategy (max 1000 queries).
     """
     embedder = get_text_embedder()
     dimension = get_dimension(384)
@@ -826,6 +830,136 @@ def rerank_with_cross_encoder(query: str, items: List[Dict], model_name: str = "
         return items[:top_k]
     except Exception:
         return items[:top_k]
+
+
+def _text_similarity_score(query: str, text: str) -> float:
+    """
+    Calculate simple text similarity score between query and text.
+    Uses keyword matching and overlap ratio.
+    """
+    if not query or not text:
+        return 0.0
+
+    query_words = set(query.lower().split())
+    text_words = set(text.lower().split())
+
+    if not query_words:
+        return 0.0
+
+    # Calculate Jaccard similarity
+    intersection = query_words.intersection(text_words)
+    union = query_words.union(text_words)
+
+    if not union:
+        return 0.0
+
+    jaccard_sim = len(intersection) / len(union)
+
+    # Calculate overlap coefficient
+    overlap_coef = len(intersection) / len(query_words) if query_words else 0.0
+
+    # Combined score (weighted)
+    return 0.7 * jaccard_sim + 0.3 * overlap_coef
+
+
+def hybrid_search_vectors(
+    store = None,
+    query: str = "",
+    top_k: int = 8,
+    rag_namespace: Optional[str] = None,
+    only_rag_data: bool = True,
+    score_threshold: Optional[float] = None,
+    vector_weight: float = 0.7,
+    keyword_weight: float = 0.3,
+    enable_advanced_search: bool = False
+) -> List[Dict]:
+    """
+    Hybrid search combining vector similarity and keyword matching.
+
+    Args:
+        store: Vector store instance
+        query: Search query
+        top_k: Number of results to return
+        rag_namespace: RAG namespace filter
+        only_rag_data: Filter to only RAG data
+        score_threshold: Minimum score threshold
+        vector_weight: Weight for vector similarity score (0.0-1.0)
+        keyword_weight: Weight for keyword similarity score (0.0-1.0)
+        enable_advanced_search: Enable MQE and HyDE query expansion
+
+    Returns:
+        List of search results with combined scores
+    """
+    if not query:
+        return []
+
+    # Normalize weights
+    total_weight = vector_weight + keyword_weight
+    if total_weight <= 0:
+        vector_weight, keyword_weight = 0.7, 0.3
+        total_weight = 1.0
+    vector_weight /= total_weight
+    keyword_weight /= total_weight
+
+    # Get vector search results
+    if enable_advanced_search:
+        vector_results = search_vectors_expanded(
+            store=store,
+            query=query,
+            top_k=top_k * 2,  # Get more candidates for hybrid ranking
+            rag_namespace=rag_namespace,
+            only_rag_data=only_rag_data,
+            score_threshold=score_threshold,
+            enable_mqe=True,
+            enable_hyde=True
+        )
+    else:
+        vector_results = search_vectors(
+            store=store,
+            query=query,
+            top_k=top_k * 2,  # Get more candidates for hybrid ranking
+            rag_namespace=rag_namespace,
+            only_rag_data=only_rag_data,
+            score_threshold=score_threshold
+        )
+
+    if not vector_results:
+        return []
+
+    # Calculate hybrid scores
+    hybrid_results = []
+    for result in vector_results:
+        # Get text content
+        content = result.get("content", "")
+        if not content:
+            content = result.get("metadata", {}).get("content", "")
+
+        # Get vector score (normalize to 0-1 if needed)
+        vector_score = result.get("score", 0.0)
+        # Qdrant scores are typically 0-1 for cosine similarity
+        if vector_score > 1.0:
+            vector_score = min(vector_score, 1.0)
+
+        # Calculate keyword score
+        keyword_score = _text_similarity_score(query, content)
+
+        # Combine scores
+        combined_score = (vector_score * vector_weight) + (keyword_score * keyword_weight)
+
+        # Create hybrid result
+        hybrid_result = result.copy()
+        hybrid_result["hybrid_score"] = combined_score
+        hybrid_result["vector_score"] = vector_score
+        hybrid_result["keyword_score"] = keyword_score
+        hybrid_result["original_score"] = vector_score  # Keep original for reference
+
+        hybrid_results.append(hybrid_result)
+
+    # Sort by hybrid score
+    hybrid_results.sort(key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
+
+    # Return top_k results
+    return hybrid_results[:top_k]
 
 
 def compute_graph_signals_from_pool(vector_hits: List[Dict], same_doc_weight: float = 1.0, proximity_weight: float = 1.0, proximity_window_chars: int = 1600) -> Dict[str, float]:
@@ -1176,8 +1310,8 @@ def create_rag_pipeline(
         )
     
     def search_advanced(
-        query: str, 
-        top_k: int = 8, 
+        query: str,
+        top_k: int = 8,
         enable_mqe: bool = False,
         enable_hyde: bool = False,
         score_threshold: Optional[float] = None
@@ -1192,16 +1326,181 @@ def create_rag_pipeline(
             enable_hyde=enable_hyde,
             score_threshold=score_threshold
         )
-    
+
+    def search_hybrid(
+        query: str,
+        top_k: int = 8,
+        score_threshold: Optional[float] = None,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3,
+        enable_advanced_search: bool = False
+    ):
+        """Hybrid search combining vector and keyword matching"""
+        return hybrid_search_vectors(
+            store=store,
+            query=query,
+            top_k=top_k,
+            rag_namespace=rag_namespace,
+            score_threshold=score_threshold,
+            vector_weight=vector_weight,
+            keyword_weight=keyword_weight,
+            enable_advanced_search=enable_advanced_search
+        )
+
     def get_stats():
         """Get pipeline statistics"""
         return store.get_collection_stats()
-    
+
     return {
         "store": store,
         "namespace": rag_namespace,
         "add_documents": add_documents,
         "search": search,
         "search_advanced": search_advanced,
+        "search_hybrid": search_hybrid,
+        "get_stats": get_stats
+    }
+
+
+def create_rag_pipeline_with_load_balancing(
+    qdrant_urls: List[str],
+    qdrant_api_keys: Optional[List[str]] = None,
+    collection_name: str = "hello_agents_rag_vectors",
+    rag_namespace: str = "default",
+    strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
+    **load_balancer_kwargs
+) -> Dict[str, Any]:
+    """
+    Create a complete RAG pipeline with load-balanced Qdrant backends.
+
+    Args:
+        qdrant_urls: List of Qdrant URLs for load balancing
+        qdrant_api_keys: List of API keys (optional, same order as urls)
+        collection_name: Collection name
+        rag_namespace: RAG namespace for isolation
+        strategy: Load balancing strategy
+        **load_balancer_kwargs: Additional load balancer parameters
+
+    Returns:
+        Dict containing store, namespace, and helper functions
+    """
+    if not qdrant_urls:
+        raise ValueError("至少需要一个Qdrant URL")
+
+    if qdrant_api_keys is None:
+        qdrant_api_keys = [None] * len(qdrant_urls)
+
+    if len(qdrant_api_keys) != len(qdrant_urls):
+        raise ValueError("URLs和API密钥数量不匹配")
+
+    dimension = get_dimension(384)
+
+    # 创建负载均衡存储
+    store = LoadBalancedVectorStore(
+        backends=[
+            QdrantVectorStore(
+                url=url,
+                api_key=api_key,
+                collection_name=collection_name,
+                vector_size=dimension,
+                distance="cosine"
+            )
+            for url, api_key in zip(qdrant_urls, qdrant_api_keys)
+        ],
+        backend_ids=[f"qdrant_{i}" for i in range(len(qdrant_urls))],
+        strategy=strategy,
+        **load_balancer_kwargs
+    )
+
+    def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100):
+        """Add documents to RAG pipeline"""
+        chunks = load_and_chunk_texts(
+            paths=file_paths,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            namespace=rag_namespace,
+            source_label="rag"
+        )
+        index_chunks(
+            store=store,
+            chunks=chunks,
+            rag_namespace=rag_namespace
+        )
+        return len(chunks)
+
+    def search(query: str, top_k: int = 8, score_threshold: Optional[float] = None):
+        """Search RAG knowledge base"""
+        return search_vectors(
+            store=store,
+            query=query,
+            top_k=top_k,
+            rag_namespace=rag_namespace,
+            score_threshold=score_threshold
+        )
+
+    def search_advanced(
+        query: str,
+        top_k: int = 8,
+        enable_mqe: bool = False,
+        enable_hyde: bool = False,
+        score_threshold: Optional[float] = None
+    ):
+        """Advanced search with query expansion"""
+        return search_vectors_expanded(
+            store=store,
+            query=query,
+            top_k=top_k,
+            rag_namespace=rag_namespace,
+            enable_mqe=enable_mqe,
+            enable_hyde=enable_hyde,
+            score_threshold=score_threshold
+        )
+
+    def search_hybrid(
+        query: str,
+        top_k: int = 8,
+        score_threshold: Optional[float] = None,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3,
+        enable_advanced_search: bool = False
+    ):
+        """Hybrid search combining vector and keyword matching"""
+        return hybrid_search_vectors(
+            store=store,
+            query=query,
+            top_k=top_k,
+            rag_namespace=rag_namespace,
+            score_threshold=score_threshold,
+            vector_weight=vector_weight,
+            keyword_weight=keyword_weight,
+            enable_advanced_search=enable_advanced_search
+        )
+
+    def get_stats():
+        """Get pipeline statistics"""
+        # 获取负载均衡器统计信息
+        lb_stats = store.get_load_balancer_stats()
+
+        # 尝试从第一个健康后端获取集合统计
+        try:
+            # 使用负载均衡器执行操作
+            collection_stats = store.get_collection_stats()
+            return {
+                "load_balancer": lb_stats,
+                "collection": collection_stats
+            }
+        except Exception as e:
+            return {
+                "load_balancer": lb_stats,
+                "collection_error": str(e)
+            }
+
+    return {
+        "store": store,
+        "namespace": rag_namespace,
+        "add_documents": add_documents,
+        "search": search,
+        "search_advanced": search_advanced,
+        "search_hybrid": search_hybrid,
         "get_stats": get_stats
     }

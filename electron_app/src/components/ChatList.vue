@@ -24,27 +24,33 @@ import useCode from '../hook/useCode';
 const appStore = useAppStore();
 const { chatList,currentView,code } = storeToRefs(appStore);
 const { validateCode } = useCode();
-const handleChatItemClick = async (key: string) => {
-  if(key !== 'llmModel'){
-      const result = await validateCode(code.value);
-      if (!result.is_valid || result.package_name === "free") {
-        alert('请激活会员码以使用功能');
-        return;
-      }
-  }
-
-  appStore.switchView(key);
-
-  if(key === 'llmModel'){
-    // 创建新对话
-    const newId = Date.now().toString();
+const handleChatItemClick = async (key: string): Promise<void> => {
+  // if(key !== 'llmModel'){
+  //     const result = await validateCode(code.value);
+  //     if (!result.is_valid || result.package_name === "free") {
+  //       alert('请激活会员码以使用功能');
+  //       return;
+  //     }
+  // }
+  
+  const newId = Date.now().toString();
       const newHistory = {
         id: newId,
         title: "新对话",
         icon: "fa-comments",
         list: []
       };
-      appStore.addHistory(newHistory);
-  }
+      appStore.addHistory(newHistory,key);
+  // if(key === 'llmModel'){
+  //   // 创建新对话
+  //   const newId = Date.now().toString();
+  //     const newHistory = {
+  //       id: newId,
+  //       title: "新对话",
+  //       icon: "fa-comments",
+  //       list: []
+  //     };
+  //     appStore.addHistory(newHistory);
+  // }
 };
 </script>

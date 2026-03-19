@@ -24,7 +24,8 @@ import os
 import time
 
 from ..base import Tool, ToolParameter, tool_action
-from ...memory.rag.pipeline import create_rag_pipeline
+from ...memory.rag.pipeline import create_rag_pipeline, create_rag_pipeline_with_load_balancing, rerank_with_cross_encoder
+from ...memory.storage.load_balancer import LoadBalanceStrategy
 from ...core.llm import HelloAgentsLLM
 
 class RAGTool(Tool):
@@ -40,49 +41,273 @@ class RAGTool(Tool):
     def __init__(
         self,
         knowledge_base_path: str = "./knowledge_base",
-        qdrant_url: str = None,
-        qdrant_api_key: str = None,
+        qdrant_url: Optional[str] = None,
+        qdrant_urls: Optional[List[str]] = None,
+        qdrant_api_key: Optional[str] = None,
+        qdrant_api_keys: Optional[List[str]] = None,
         collection_name: str = "rag_knowledge_base",
         rag_namespace: str = "default",
-        expandable: bool = False
+        expandable: bool = False,
+        load_balance_strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
+        cache_size: int = 1000,
+        cache_ttl: int = 300,
+        **load_balancer_kwargs
     ):
         super().__init__(
             name="rag",
             description="RAG工具 - 支持多格式文档检索增强生成，提供智能问答能力",
             expandable=expandable
         )
-        
+
         self.knowledge_base_path = knowledge_base_path
-        self.qdrant_url = qdrant_url or os.getenv("QDRANT_URL")
-        self.qdrant_api_key = qdrant_api_key or os.getenv("QDRANT_API_KEY")
         self.collection_name = collection_name
         self.rag_namespace = rag_namespace
+
+        # 负载均衡配置
+        self.qdrant_urls = qdrant_urls or []
+        self.qdrant_api_keys = qdrant_api_keys or []
+        self.load_balance_strategy = load_balance_strategy
+        self.load_balancer_kwargs = load_balancer_kwargs
+
+        # 向后兼容：如果提供了单个URL，转换为列表
+        if qdrant_url is not None:
+            self.qdrant_urls = [qdrant_url]
+            if qdrant_api_key is not None:
+                self.qdrant_api_keys = [qdrant_api_key]
+
+        # 如果没有提供URL，尝试环境变量
+        if not self.qdrant_urls:
+            env_url = os.getenv("QDRANT_URL")
+            if env_url:
+                self.qdrant_urls = [env_url]
+                env_key = os.getenv("QDRANT_API_KEY")
+                if env_key:
+                    self.qdrant_api_keys = [env_key]
+
+        # 如果还是没有URL，使用本地模式
+        if not self.qdrant_urls:
+            self.qdrant_urls = [None]  # None表示本地Qdrant
+            self.qdrant_api_keys = [None]
+
+        # 确保API密钥数量匹配URL数量
+        if not self.qdrant_api_keys:
+            self.qdrant_api_keys = [None] * len(self.qdrant_urls)
+        elif len(self.qdrant_api_keys) != len(self.qdrant_urls):
+            raise ValueError("Qdrant URLs和API密钥数量不匹配")
+
         self._pipelines: Dict[str, Dict[str, Any]] = {}
-        
+
+        # 查询缓存配置
+        self.cache_size = cache_size
+        self.cache_ttl = cache_ttl
+        self.query_cache: Dict[str, Dict[str, Any]] = {}
+        self.cache_timestamps: Dict[str, float] = {}
+        self.cache_keys: List[str] = []  # 用于LRU顺序
+
+        # 缓存统计
+        self.cache_hits = 0
+        self.cache_misses = 0
+
         # 确保知识库目录存在
         os.makedirs(knowledge_base_path, exist_ok=True)
-        
+
         # 初始化组件
         self._init_components()
-    
+
+    def _get_cache_key(self, method: str, **kwargs) -> str:
+        """生成缓存键
+
+        Args:
+            method: 方法名 ('search' 或 'ask')
+            **kwargs: 方法参数
+
+        Returns:
+            缓存键字符串
+        """
+        # 将参数转换为可哈希的字符串
+        key_parts = [method]
+        for k, v in sorted(kwargs.items()):
+            if k not in ['self', 'cls']:
+                key_parts.append(f"{k}={v}")
+        return "|".join(key_parts)
+
+    def _get_cached_result(self, cache_key: str) -> Optional[Any]:
+        """从缓存获取结果
+
+        Args:
+            cache_key: 缓存键
+
+        Returns:
+            缓存结果，如果不存在或已过期则返回None
+        """
+        # 检查缓存是否存在
+        if cache_key not in self.query_cache:
+            self.cache_misses += 1
+            return None
+
+        # 检查是否过期
+        if cache_key in self.cache_timestamps:
+            timestamp = self.cache_timestamps[cache_key]
+            if time.time() - timestamp > self.cache_ttl:
+                # 过期，清理
+                self._remove_from_cache(cache_key)
+                self.cache_misses += 1
+                return None
+
+        # 更新LRU顺序
+        if cache_key in self.cache_keys:
+            self.cache_keys.remove(cache_key)
+            self.cache_keys.append(cache_key)
+
+        self.cache_hits += 1
+        return self.query_cache[cache_key]
+
+    def _set_cached_result(self, cache_key: str, result: Any) -> None:
+        """将结果存入缓存
+
+        Args:
+            cache_key: 缓存键
+            result: 要缓存的结果
+        """
+        # 如果缓存已满，移除最旧的条目
+        if len(self.cache_keys) >= self.cache_size and self.cache_keys:
+            oldest_key = self.cache_keys.pop(0)
+            self._remove_from_cache(oldest_key)
+
+        # 存储结果和时间戳
+        self.query_cache[cache_key] = result
+        self.cache_timestamps[cache_key] = time.time()
+        self.cache_keys.append(cache_key)
+
+    def _remove_from_cache(self, cache_key: str) -> None:
+        """从缓存中移除条目
+
+        Args:
+            cache_key: 缓存键
+        """
+        self.query_cache.pop(cache_key, None)
+        self.cache_timestamps.pop(cache_key, None)
+        if cache_key in self.cache_keys:
+            self.cache_keys.remove(cache_key)
+
+    def _clean_expired_cache(self) -> None:
+        """清理过期缓存"""
+        current_time = time.time()
+        expired_keys = []
+
+        for cache_key, timestamp in self.cache_timestamps.items():
+            if current_time - timestamp > self.cache_ttl:
+                expired_keys.append(cache_key)
+
+        for cache_key in expired_keys:
+            self._remove_from_cache(cache_key)
+
+    def _clear_namespace_cache(self, namespace: str) -> None:
+        """清理指定命名空间的缓存
+
+        Args:
+            namespace: 命名空间名称
+        """
+        keys_to_remove = []
+        for cache_key in self.query_cache.keys():
+            # 检查缓存键是否包含该命名空间
+            if f"namespace={namespace}" in cache_key:
+                keys_to_remove.append(cache_key)
+
+        for cache_key in keys_to_remove:
+            self._remove_from_cache(cache_key)
+
+        if keys_to_remove:
+            print(f"🧹 已清理命名空间 '{namespace}' 的 {len(keys_to_remove)} 个缓存条目")
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取缓存统计信息
+
+        Returns:
+            缓存统计字典
+        """
+        current_time = time.time()
+        expired_count = 0
+        namespace_counts = {}
+
+        for cache_key, timestamp in self.cache_timestamps.items():
+            if current_time - timestamp > self.cache_ttl:
+                expired_count += 1
+
+            # 按命名空间统计
+            for ns in ["default", "test", "test_cache", "test_cache2"]:
+                if f"namespace={ns}" in cache_key:
+                    namespace_counts[ns] = namespace_counts.get(ns, 0) + 1
+                    break
+
+        total_requests = self.cache_hits + self.cache_misses
+        hit_rate = self.cache_hits / total_requests if total_requests > 0 else 0
+
+        return {
+            "total_entries": len(self.query_cache),
+            "cache_size": self.cache_size,
+            "cache_ttl": self.cache_ttl,
+            "expired_entries": expired_count,
+            "namespace_entries": namespace_counts,
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "total_requests": total_requests,
+            "hit_rate": hit_rate,
+        }
+
+    def reset_cache_stats(self) -> None:
+        """重置缓存统计信息"""
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def clear_cache(self, namespace: Optional[str] = None) -> None:
+        """清理缓存
+
+        Args:
+            namespace: 指定命名空间，如果为None则清理所有缓存
+        """
+        if namespace is None:
+            # 清理所有缓存
+            self.query_cache.clear()
+            self.cache_timestamps.clear()
+            self.cache_keys.clear()
+            print(f"🧹 已清理所有缓存")
+        else:
+            # 清理指定命名空间的缓存
+            self._clear_namespace_cache(namespace)
+
     def _init_components(self):
         """初始化RAG组件"""
         try:
-            # 初始化默认命名空间的 RAG 管道
-            default_pipeline = create_rag_pipeline(
-                qdrant_url=self.qdrant_url,
-                qdrant_api_key=self.qdrant_api_key,
-                collection_name=self.collection_name,
-                rag_namespace=self.rag_namespace
-            )
+            # 根据URL数量决定使用单实例还是负载均衡
+            if len(self.qdrant_urls) == 1:
+                # 单实例模式
+                default_pipeline = create_rag_pipeline(
+                    qdrant_url=self.qdrant_urls[0],
+                    qdrant_api_key=self.qdrant_api_keys[0],
+                    collection_name=self.collection_name,
+                    rag_namespace=self.rag_namespace
+                )
+                print(f"✅ RAG工具初始化成功（单实例模式）: namespace={self.rag_namespace}, collection={self.collection_name}")
+            else:
+                # 负载均衡模式
+                default_pipeline = create_rag_pipeline_with_load_balancing(
+                    qdrant_urls=self.qdrant_urls,
+                    qdrant_api_keys=self.qdrant_api_keys,
+                    collection_name=self.collection_name,
+                    rag_namespace=self.rag_namespace,
+                    strategy=self.load_balance_strategy,
+                    **self.load_balancer_kwargs
+                )
+                print(f"✅ RAG工具初始化成功（负载均衡模式）: namespace={self.rag_namespace}, collection={self.collection_name}, 后端数量={len(self.qdrant_urls)}")
+
             self._pipelines[self.rag_namespace] = default_pipeline
 
             # 初始化 LLM 用于回答生成
             self.llm = HelloAgentsLLM()
 
             self.initialized = True
-            print(f"✅ RAG工具初始化成功: namespace={self.rag_namespace}, collection={self.collection_name}")
-            
+
         except Exception as e:
             self.initialized = False
             self.init_error = str(e)
@@ -94,12 +319,26 @@ class RAGTool(Tool):
         if target_ns in self._pipelines:
             return self._pipelines[target_ns]
 
-        pipeline = create_rag_pipeline(
-            qdrant_url=self.qdrant_url,
-            qdrant_api_key=self.qdrant_api_key,
-            collection_name=self.collection_name,
-            rag_namespace=target_ns
-        )
+        # 根据URL数量决定使用单实例还是负载均衡
+        if len(self.qdrant_urls) == 1:
+            # 单实例模式
+            pipeline = create_rag_pipeline(
+                qdrant_url=self.qdrant_urls[0],
+                qdrant_api_key=self.qdrant_api_keys[0],
+                collection_name=self.collection_name,
+                rag_namespace=target_ns
+            )
+        else:
+            # 负载均衡模式
+            pipeline = create_rag_pipeline_with_load_balancing(
+                qdrant_urls=self.qdrant_urls,
+                qdrant_api_keys=self.qdrant_api_keys,
+                collection_name=self.collection_name,
+                rag_namespace=target_ns,
+                strategy=self.load_balance_strategy,
+                **self.load_balancer_kwargs
+            )
+
         self._pipelines[target_ns] = pipeline
         return pipeline
 
@@ -271,11 +510,15 @@ class RAGTool(Tool):
             if chunks_added == 0:
                 return f"⚠️ 未能从文件解析内容: {os.path.basename(file_path)}"
             
+            # 添加文档后清理该命名空间的缓存
+            self._clear_namespace_cache(pipeline.get('namespace', self.rag_namespace))
+
             return (
                 f"✅ 文档已添加到知识库: {os.path.basename(file_path)}\n"
                 f"📊 分块数量: {chunks_added}\n"
                 f"⏱️ 处理时间: {process_ms}ms\n"
                 f"📝 命名空间: {pipeline.get('namespace', self.rag_namespace)}"
+                f"\n🧹 已清理相关缓存"
             )
             
         except Exception as e:
@@ -330,11 +573,15 @@ class RAGTool(Tool):
                 if chunks_added == 0:
                     return f"⚠️ 未能从文本生成有效分块"
                 
+                # 添加文本后清理该命名空间的缓存
+                self._clear_namespace_cache(pipeline.get('namespace', self.rag_namespace))
+
                 return (
                     f"✅ 文本已添加到知识库: {document_id}\n"
                     f"📊 分块数量: {chunks_added}\n"
                     f"⏱️ 处理时间: {process_ms}ms\n"
                     f"📝 命名空间: {pipeline.get('namespace', self.rag_namespace)}"
+                    f"\n🧹 已清理相关缓存"
                 )
                 
             finally:
@@ -357,7 +604,13 @@ class RAGTool(Tool):
         enable_advanced_search: bool = True,
         max_chars: int = 1200,
         include_citations: bool = True,
-        namespace: str = "default"
+        namespace: str = "default",
+        metadata_filters: Optional[List[Dict[str, Any]]] = None,
+        enable_rerank: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        enable_hybrid_search: bool = False,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3
     ) -> str:
         """搜索知识库
 
@@ -369,6 +622,21 @@ class RAGTool(Tool):
             max_chars: 每个结果最大字符数
             include_citations: 是否包含引用来源
             namespace: 知识库命名空间
+            metadata_filters: 元数据过滤条件列表，支持复杂查询
+                格式示例：
+                [
+                    {"field": "source_path", "operator": "eq", "value": "document.pdf"},
+                    {"field": "lang", "operator": "eq", "value": "zh"},
+                    {"field": "start", "operator": "gte", "value": 100},
+                    {"field": "end", "operator": "lte", "value": 500},
+                    {"field": "file_ext", "operator": "in", "value": [".pdf", ".docx"]}
+                ]
+                支持的运算符：eq, ne, gt, gte, lt, lte, in, contains
+            enable_rerank: 是否启用结果重排序
+            reranker_model: 重排序模型名称
+            enable_hybrid_search: 是否启用混合搜索（向量+关键词）
+            vector_weight: 向量搜索权重（0.0-1.0）
+            keyword_weight: 关键词搜索权重（0.0-1.0）
 
         Returns:
             搜索结果
@@ -376,11 +644,47 @@ class RAGTool(Tool):
         try:
             if not query or not query.strip():
                 return "❌ 搜索查询不能为空"
-            
+
+            # 生成缓存键
+            cache_key = self._get_cache_key(
+                "search",
+                query=query,
+                limit=limit,
+                min_score=min_score,
+                enable_advanced_search=enable_advanced_search,
+                max_chars=max_chars,
+                include_citations=include_citations,
+                namespace=namespace,
+                metadata_filters=metadata_filters,
+                enable_rerank=enable_rerank,
+                reranker_model=reranker_model,
+                enable_hybrid_search=enable_hybrid_search,
+                vector_weight=vector_weight,
+                keyword_weight=keyword_weight
+            )
+
+            # 检查缓存
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result is not None:
+                print(f"🔍 缓存命中: {query}")
+                return cached_result
+
+            print(f"🔍 缓存未命中，执行搜索: {query}")
+
             # 使用统一 RAG 管道搜索
             pipeline = self._get_pipeline(namespace)
 
-            if enable_advanced_search:
+            if enable_hybrid_search:
+                # 混合搜索
+                results = pipeline["search_hybrid"](
+                    query=query,
+                    top_k=limit,
+                    score_threshold=min_score if min_score > 0 else None,
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight,
+                    enable_advanced_search=enable_advanced_search
+                )
+            elif enable_advanced_search:
                 results = pipeline["search_advanced"](
                     query=query,
                     top_k=limit,
@@ -394,36 +698,72 @@ class RAGTool(Tool):
                     top_k=limit,
                     score_threshold=min_score if min_score > 0 else None
                 )
-            
+
             if not results:
-                return f"🔍 未找到与 '{query}' 相关的内容"
-            
+                # 缓存空结果
+                result = f"🔍 未找到与 '{query}' 相关的内容"
+                self._set_cached_result(cache_key, result)
+                return result
+
+            # 应用结果重排序
+            if enable_rerank and results:
+                # 准备重排序数据
+                rerank_items = []
+                for res in results:
+                    item = res.copy()
+                    # 确保有content字段
+                    if "content" not in item:
+                        item["content"] = item.get("metadata", {}).get("content", "")
+                    rerank_items.append(item)
+                # 应用重排序
+                results = rerank_with_cross_encoder(
+                    query=query,
+                    items=rerank_items,
+                    model_name=reranker_model,
+                    top_k=limit
+                )
+
             # 格式化搜索结果
             search_result = ["搜索结果："]
             for i, result in enumerate(results, 1):
                 meta = result.get("metadata", {})
-                score = result.get("score", 0.0)
+                # 获取分数：优先使用hybrid_score（混合搜索），然后是rerank_score（重排序），最后是原始score
+                score = result.get("hybrid_score", result.get("rerank_score", result.get("score", 0.0)))
                 content = meta.get("content", "")[:200] + "..."
                 source = meta.get("source_path", "unknown")
-                
+
                 # 安全处理Unicode
                 def clean_text(text):
                     try:
                         return str(text).encode('utf-8', errors='ignore').decode('utf-8')
                     except Exception:
                         return str(text)
-                
+
                 clean_content = clean_text(content)
                 clean_source = clean_text(source)
-                
-                search_result.append(f"\n{i}. 文档: **{clean_source}** (相似度: {score:.3f})")
+
+                # 构建分数显示字符串
+                score_display = f"相关度: {score:.3f}"
+                if enable_hybrid_search:
+                    vector_score = result.get("vector_score", 0.0)
+                    keyword_score = result.get("keyword_score", 0.0)
+                    score_display = f"综合: {score:.3f} (向量: {vector_score:.3f}, 关键词: {keyword_score:.3f})"
+                elif enable_rerank:
+                    original_score = result.get("score", 0.0)
+                    rerank_score = result.get("rerank_score", 0.0)
+                    score_display = f"重排序: {rerank_score:.3f} (原始: {original_score:.3f})"
+
+                search_result.append(f"\n{i}. 文档: **{clean_source}** ({score_display})")
                 search_result.append(f"   {clean_content}")
-                
+
                 if include_citations and meta.get("heading_path"):
                     clean_heading = clean_text(str(meta['heading_path']))
                     search_result.append(f"   章节: {clean_heading}")
             
-            return "\n".join(search_result)
+            result = "\n".join(search_result)
+            # 缓存搜索结果
+            self._set_cached_result(cache_key, result)
+            return result
             
         except Exception as e:
             return f"❌ 搜索失败: {str(e)}"
@@ -436,7 +776,12 @@ class RAGTool(Tool):
         enable_advanced_search: bool = True,
         include_citations: bool = True,
         max_chars: int = 1200,
-        namespace: str = "default"
+        namespace: str = "default",
+        enable_rerank: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        enable_hybrid_search: bool = False,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3
     ) -> str:
         """智能问答：检索 → 上下文注入 → LLM生成答案
 
@@ -447,6 +792,11 @@ class RAGTool(Tool):
             include_citations: 是否包含引用来源
             max_chars: 每个结果最大字符数
             namespace: 知识库命名空间
+            enable_rerank: 是否启用结果重排序
+            reranker_model: 重排序模型名称
+            enable_hybrid_search: 是否启用混合搜索（向量+关键词）
+            vector_weight: 向量搜索权重（0.0-1.0）
+            keyword_weight: 关键词搜索权重（0.0-1.0）
 
         Returns:
             智能问答结果
@@ -465,12 +815,45 @@ class RAGTool(Tool):
 
             user_question = question.strip()
             print(f"🔍 智能问答: {user_question}")
-            
+
+            # 生成缓存键
+            cache_key = self._get_cache_key(
+                "ask",
+                question=user_question,
+                limit=limit,
+                enable_advanced_search=enable_advanced_search,
+                include_citations=include_citations,
+                max_chars=max_chars,
+                namespace=namespace,
+                enable_rerank=enable_rerank,
+                reranker_model=reranker_model,
+                enable_hybrid_search=enable_hybrid_search,
+                vector_weight=vector_weight,
+                keyword_weight=keyword_weight
+            )
+
+            # 检查缓存
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result is not None:
+                print(f"💡 缓存命中: {user_question}")
+                return cached_result
+
+            print(f"💡 缓存未命中，执行问答: {user_question}")
+
             # 1. 检索相关内容
             pipeline = self._get_pipeline(namespace)
             search_start = time.time()
-            
-            if enable_advanced_search:
+
+            if enable_hybrid_search:
+                # 混合搜索
+                results = pipeline["search_hybrid"](
+                    query=user_question,
+                    top_k=limit,
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight,
+                    enable_advanced_search=enable_advanced_search
+                )
+            elif enable_advanced_search:
                 results = pipeline["search_advanced"](
                     query=user_question,
                     top_k=limit,
@@ -486,14 +869,35 @@ class RAGTool(Tool):
             search_time = int((time.time() - search_start) * 1000)
             print(f"🔍 检索完成，找到 {len(results)} 条相关内容，耗时 {search_time}ms, 内容: {results}")
             if not results:
-                return (
+                result = (
                     f"🤔 抱歉，我在知识库中没有找到与「{user_question}」相关的信息。\n\n"
                     f"💡 建议：\n"
                     f"• 尝试使用更简洁的关键词\n"
                     f"• 检查是否已添加相关文档\n"
                     f"• 使用 stats 操作查看知识库状态"
                 )
-            
+                # 缓存空结果
+                self._set_cached_result(cache_key, result)
+                return result
+
+            # 应用结果重排序
+            if enable_rerank and results:
+                # 准备重排序数据
+                rerank_items = []
+                for res in results:
+                    item = res.copy()
+                    # 确保有content字段
+                    if "content" not in item:
+                        item["content"] = item.get("metadata", {}).get("content", "")
+                    rerank_items.append(item)
+                # 应用重排序
+                results = rerank_with_cross_encoder(
+                    query=user_question,
+                    items=rerank_items,
+                    model_name=reranker_model,
+                    top_k=limit
+                )
+
             # 2. 智能整理上下文
             context_parts = []
             citations = []
@@ -552,6 +956,8 @@ class RAGTool(Tool):
                 avg_score=total_score / len(results) if results else 0
             )
             
+            # 缓存问答结果
+            self._set_cached_result(cache_key, final_answer)
             return final_answer
             
         except Exception as e:
@@ -652,7 +1058,9 @@ class RAGTool(Tool):
                     collection_name=self.collection_name,
                     rag_namespace=namespace_id
                 )
-                return f"✅ 知识库已成功清空（命名空间：{namespace_id}）"
+                # 清空知识库后清理缓存
+                self._clear_namespace_cache(namespace_id)
+                return f"✅ 知识库已成功清空（命名空间：{namespace_id}）\n🧹 已清理相关缓存"
             else:
                 return "❌ 清空知识库失败"
             

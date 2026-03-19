@@ -27,11 +27,11 @@ class Agent(ABC):
         """运行Agent"""
         pass
     
-    def add_message(self, message: Message):
+    def add_message(self, message: Message) -> None:
         """添加消息到历史记录"""
         self._history.append(message)
     
-    def clear_history(self):
+    def clear_history(self) -> None:
         """清空历史记录"""
         self._history.clear()
     

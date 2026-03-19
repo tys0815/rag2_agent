@@ -1,7 +1,12 @@
 import { useAppStore } from '../stores/appStore';
 import { storeToRefs } from 'pinia';
 import { type CodeValidateResult } from '../types/index';
-export default function (){
+
+interface UseCodeReturn {
+    validateCode: (code?: string) => Promise<CodeValidateResult>;
+}
+
+export default function (): UseCodeReturn {
     const appStore = useAppStore();
     const { apiUrl } = storeToRefs(appStore);
 

@@ -270,9 +270,131 @@ class TravelPlannerAgent(Agent):
             return ""
 
     def _extract_travel_info(self, text: str) -> Dict[str, Any]:
-        """提取旅游关键信息：地点、时间、天数等"""
-        # 这里可以调用LLM进行更复杂的信息提取
-        # 目前使用简单的规则提取
+        """使用function calling提取旅游关键信息：地点、时间、天数等"""
+        # 定义旅游信息提取的function schema
+        travel_info_schema = {
+            "type": "function",
+            "function": {
+                "name": "extract_travel_info",
+                "description": "从用户输入中提取旅游相关信息",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "locations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "旅游目的地列表，如['北京', '上海']"
+                        },
+                        "start_date": {
+                            "type": "string",
+                            "description": "旅行开始日期，格式YYYY-MM-DD，如未指定则为null"
+                        },
+                        "end_date": {
+                            "type": "string",
+                            "description": "旅行结束日期，格式YYYY-MM-DD，如未指定则为null"
+                        },
+                        "duration_days": {
+                            "type": "integer",
+                            "description": "旅行天数，如3天则为3"
+                        },
+                        "budget": {
+                            "type": "string",
+                            "description": "旅行预算，如'5000元'或'1万元'"
+                        },
+                        "interests": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "旅行兴趣偏好，如['历史文化', '美食', '自然风光']"
+                        },
+                        "travelers": {
+                            "type": "integer",
+                            "description": "旅行人数"
+                        },
+                        "travel_type": {
+                            "type": "string",
+                            "description": "旅行类型，如'家庭游', '情侣游', '商务旅行', '自由行'等"
+                        },
+                        "accommodation_preference": {
+                            "type": "string",
+                            "description": "住宿偏好，如'酒店', '民宿', '经济型'等"
+                        },
+                        "transportation_preference": {
+                            "type": "string",
+                            "description": "交通偏好，如'飞机', '高铁', '自驾'等"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        }
+
+        # 构建消息
+        messages = [
+            {
+                "role": "system",
+                "content": "你是一个旅游信息提取助手。请从用户输入中提取旅游相关信息，包括地点、时间、天数、预算、兴趣等。如果某些信息未明确提及，请设为null。"
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ]
+
+        try:
+            # 调用LLM的function calling功能
+            client = getattr(self.llm, "_client", None)
+            if client is None:
+                raise RuntimeError("LLM客户端未初始化")
+
+            response = client.chat.completions.create(
+                model=self.llm.model,
+                messages=messages,
+                tools=[travel_info_schema],
+                tool_choice={"type": "function", "function": {"name": "extract_travel_info"}},
+                temperature=0.1  # 低温度以获得更确定的结果
+            )
+
+            # 解析响应
+            choice = response.choices[0]
+            message = choice.message
+
+            if message.tool_calls and len(message.tool_calls) > 0:
+                tool_call = message.tool_calls[0]
+                if tool_call.function.name == "extract_travel_info":
+                    import json
+                    arguments = json.loads(tool_call.function.arguments)
+
+                    # 确保所有字段都有默认值
+                    info = {
+                        "locations": arguments.get("locations", []),
+                        "start_date": arguments.get("start_date"),
+                        "end_date": arguments.get("end_date"),
+                        "duration_days": arguments.get("duration_days"),
+                        "budget": arguments.get("budget"),
+                        "interests": arguments.get("interests", []),
+                        "travelers": arguments.get("travelers"),
+                        "travel_type": arguments.get("travel_type"),
+                        "accommodation_preference": arguments.get("accommodation_preference"),
+                        "transportation_preference": arguments.get("transportation_preference")
+                    }
+
+                    # 如果没有检测到地点，使用占位符
+                    if not info["locations"]:
+                        info["locations"] = ["未指定"]
+
+                    print(f"[Info] 通过function calling提取的旅游信息: {info}")
+                    return info
+
+        except Exception as e:
+            print(f"[WARN] 使用function calling提取旅游信息失败: {e}")
+            # 失败时回退到简单规则提取
+            return self._fallback_extract_travel_info(text)
+
+        # 如果没有提取到信息，使用回退方法
+        return self._fallback_extract_travel_info(text)
+
+    def _fallback_extract_travel_info(self, text: str) -> Dict[str, Any]:
+        """回退方法：使用简单规则提取旅游信息"""
         info = {
             "locations": [],
             "start_date": None,
@@ -280,10 +402,13 @@ class TravelPlannerAgent(Agent):
             "duration_days": None,
             "budget": None,
             "interests": [],
-            "travelers": None
+            "travelers": None,
+            "travel_type": None,
+            "accommodation_preference": None,
+            "transportation_preference": None
         }
 
-        # 简单关键词匹配（实际应用中应使用NER或LLM提取）
+        # 简单关键词匹配
         import re
 
         # 提取天数
@@ -297,15 +422,46 @@ class TravelPlannerAgent(Agent):
             info["travelers"] = int(people_match.group(1))
 
         # 提取预算
-        budget_match = re.search(r'预算\s*(\d+)[元万]', text)
+        budget_match = re.search(r'预算\s*(\d+[元万]?)', text)
         if budget_match:
             info["budget"] = budget_match.group(1)
 
-        # 简单地点识别（实际应用应使用更复杂的方法）
-        locations = ["北京", "上海", "广州", "深圳", "杭州", "成都", "西安", "南京", "武汉", "重庆"]
+        # 简单地点识别
+        locations = ["北京", "上海", "广州", "深圳", "杭州", "成都", "西安", "南京", "武汉", "重庆",
+                    "苏州", "厦门", "青岛", "大连", "天津", "长沙", "郑州", "合肥", "福州", "南宁",
+                    "昆明", "贵阳", "兰州", "西宁", "银川", "乌鲁木齐", "拉萨", "香港", "澳门", "台湾"]
         for loc in locations:
             if loc in text:
                 info["locations"].append(loc)
+
+        # 兴趣识别
+        interests_keywords = {
+            "历史文化": ["历史", "文化", "古迹", "博物馆", "遗址", "传统"],
+            "自然风光": ["自然", "风景", "山水", "公园", "森林", "湖泊", "海滩"],
+            "美食": ["美食", "小吃", "餐厅", "特色菜", "吃货", "美味"],
+            "购物": ["购物", "商场", "逛街", "买", "购物中心", "商业街"],
+            "娱乐": ["娱乐", "游乐场", "主题公园", "电影", "KTV", "酒吧"],
+            "户外运动": ["户外", "运动", "登山", "徒步", "骑行", "滑雪", "潜水"],
+            "亲子": ["亲子", "儿童", "孩子", "家庭", "小朋友", "宝宝"]
+        }
+
+        for interest_type, keywords in interests_keywords.items():
+            for keyword in keywords:
+                if keyword in text and interest_type not in info["interests"]:
+                    info["interests"].append(interest_type)
+                    break
+
+        # 旅行类型识别
+        if "家庭" in text or "亲子" in text or "带孩子" in text:
+            info["travel_type"] = "家庭游"
+        elif "情侣" in text or "夫妻" in text or "蜜月" in text:
+            info["travel_type"] = "情侣游"
+        elif "商务" in text or "出差" in text or "会议" in text:
+            info["travel_type"] = "商务旅行"
+        elif "自由行" in text or "自助游" in text:
+            info["travel_type"] = "自由行"
+        elif "跟团" in text or "旅行团" in text:
+            info["travel_type"] = "跟团游"
 
         # 如果没有检测到地点，使用占位符
         if not info["locations"]:

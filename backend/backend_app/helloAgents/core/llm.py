@@ -18,6 +18,7 @@ SUPPORTED_PROVIDERS = Literal[
     "vllm",
     "local",
     "auto",
+    "volc",
     "custom",
 ]
 
@@ -148,6 +149,8 @@ class HelloAgentsLLM:
                 return "kimi"
             elif "open.bigmodel.cn" in base_url_lower:
                 return "zhipu"
+            elif "volces.com" in base_url_lower or "volcengineapi.com" in base_url_lower:
+                return "volc"
             elif "localhost" in base_url_lower or "127.0.0.1" in base_url_lower:
                 # 本地部署检测 - 优先检查特定服务
                 if ":11434" in base_url_lower or "ollama" in base_url_lower:
@@ -202,6 +205,11 @@ class HelloAgentsLLM:
             resolved_api_key = api_key or os.getenv("ZHIPU_API_KEY") or os.getenv("GLM_API_KEY") or os.getenv("LLM_API_KEY")
             resolved_base_url = base_url or os.getenv("LLM_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4"
             return resolved_api_key, resolved_base_url
+        
+        elif self.provider == "volc":
+            resolved_api_key = api_key or os.getenv("VOLC_API_KEY") or os.getenv("VOLCENGINE_API_KEY") or os.getenv("LLM_API_KEY")
+            resolved_base_url = base_url or os.getenv("VOLC_BASE_URL") or os.getenv("LLM_BASE_URL")
+            return resolved_api_key, resolved_base_url
 
         elif self.provider == "ollama":
             resolved_api_key = api_key or os.getenv("OLLAMA_API_KEY") or os.getenv("LLM_API_KEY") or "ollama"
@@ -251,6 +259,8 @@ class HelloAgentsLLM:
             return "moonshot-v1-8k"
         elif self.provider == "zhipu":
             return "glm-4"
+        elif self.provider == "volc":
+            return "deepseek-v3.2"
         elif self.provider == "ollama":
             return "llama3.2"  # Ollama常用模型
         elif self.provider == "vllm":

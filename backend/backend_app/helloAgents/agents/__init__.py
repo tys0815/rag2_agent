@@ -6,6 +6,10 @@ from .react_agent import ReActAgent
 from .reflection_agent import ReflectionAgent
 from .plan_solve_agent import PlanAndSolveAgent
 from .tool_aware_agent import ToolAwareSimpleAgent
+from .enterprise_rag_agent import EnterpriseRagAgent
+from .universal_enterprise_agent import UniversalEnterpriseAgent
+from .travel_planner_agent import TravelPlannerAgent
+from .geo_optimization_agent import GeoOptimizationAgent
 
 __all__ = [
     "SimpleAgent",
@@ -13,5 +17,9 @@ __all__ = [
     "ReActAgent",
     "ReflectionAgent",
     "PlanAndSolveAgent",
-    "ToolAwareSimpleAgent"
+    "ToolAwareSimpleAgent",
+    "EnterpriseRagAgent",
+    "UniversalEnterpriseAgent",
+    "TravelPlannerAgent",
+    "GeoOptimizationAgent"
 ]

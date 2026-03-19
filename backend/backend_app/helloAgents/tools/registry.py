@@ -17,7 +17,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._functions: dict[str, dict[str, Any]] = {}
 
-    def register_tool(self, tool: Tool, auto_expand: bool = True):
+    def register_tool(self, tool: Tool, auto_expand: bool = True) -> None:
         """
         注册Tool对象
 
@@ -44,7 +44,7 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         print(f"[OK] 工具 '{tool.name}' 已注册。")
 
-    def register_function(self, name: str, description: str, func: Callable[[str], str]):
+    def register_function(self, name: str, description: str, func: Callable[[str], str]) -> None:
         """
         直接注册函数作为工具（简便方式）
 
@@ -62,7 +62,7 @@ class ToolRegistry:
         }
         print(f"[OK] 工具 '{name}' 已注册。")
 
-    def unregister(self, name: str):
+    def unregister(self, name: str) -> None:
         """注销工具"""
         if name in self._tools:
             del self._tools[name]
@@ -77,7 +77,7 @@ class ToolRegistry:
         """获取Tool对象"""
         return self._tools.get(name)
 
-    def get_function(self, name: str) -> Optional[Callable]:
+    def get_function(self, name: str) -> Optional[Callable[[str], str]]:
         """获取工具函数"""
         func_info = self._functions.get(name)
         return func_info["func"] if func_info else None
@@ -140,7 +140,7 @@ class ToolRegistry:
         """获取所有Tool对象"""
         return list(self._tools.values())
 
-    def clear(self):
+    def clear(self) -> None:
         """清空所有工具"""
         self._tools.clear()
         self._functions.clear()

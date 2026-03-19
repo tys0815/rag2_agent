@@ -54,6 +54,8 @@ export const useAppStore = defineStore('app', {
     chatList: [
       { title: "新对话", icon: "fa-comments", key: "llmModel" },
       { title: "旅游路线规划", icon: "fa-map-marker", key: "travelModel" },
+      { title: "GEO优化助手", icon: "fa-globe", key: "geoModel" },
+      { title: "全能企业级助手", icon: "fa-rocket", key: "universalModel" },
       { title: "语音生成", icon: "fa-microphone", key: "soulModel" },
       { title: "图像生成", icon: "fa-picture-o", key: "imgModel" },
       { title: "视频生成", icon: "fa-film", key: "vidolModel" }
@@ -103,6 +105,7 @@ export const useAppStore = defineStore('app', {
   actions: {
     // 切换视图
     switchView(key: string) {
+      console.log('全能助手', key);
       this.currentView = key;
     },
     // 设置当前选中的历史记录
@@ -121,10 +124,11 @@ export const useAppStore = defineStore('app', {
       this.code = newCode;
     },
     // 添加新的历史记录
-    addHistory(history: HistoryItem) {
+    addHistory(history: HistoryItem, key: string) {
       this.historyList.unshift(history);
       // 设置新对话为当前选中的历史记录
       this.setCurrentHistoryId(history.id);
+      this.switchView(key);
     },
     // 更新历史记录
     updateHistory(id: string, updates: Partial<HistoryItem>) {
@@ -169,6 +173,55 @@ export const useAppStore = defineStore('app', {
 
       // 3. 更新消息内容（核心逻辑）
       this.historyList[historyIndex].list[messageIndex].content = content;
+    },
+    // 重置缓存数据到初始值（保留apiUrl、llmModel、system_prompt、code）
+    resetCache() {
+      this.currentView = 'travelModel';
+      this.currentHistoryId = '1';
+      this.chatList = [
+        { title: "新对话", icon: "fa-comments", key: "llmModel" },
+        { title: "旅游路线规划", icon: "fa-map-marker", key: "travelModel" },
+        { title: "GEO优化助手", icon: "fa-globe", key: "geoModel" },
+        { title: "全能企业级助手", icon: "fa-rocket", key: "universalModel" },
+        { title: "语音生成", icon: "fa-microphone", key: "soulModel" },
+        { title: "图像生成", icon: "fa-picture-o", key: "imgModel" },
+        { title: "视频生成", icon: "fa-film", key: "vidolModel" }
+      ];
+      this.historyList = [
+        {
+          id: "1",
+          title: "技术文档总结",
+          icon: "fa-file-text-o",
+          list: [
+            { id: "1-1", role: "user", content: "请帮我总结一下这份技术文档的主要内容和关键点。" },
+            { id: "1-2", role: "assistant", content: "这份技术文档主要介绍了XYZ技术的架构设计、核心功能和应用场景。关键点包括高可扩展性、低延迟处理和多平台支持。文档还提供了详细的API说明和使用示例，帮助开发者快速上手。" }
+          ]
+        },
+        {
+          id: "2",
+          title: "Python 编程问题",
+          icon: "fa-code",
+          list: [
+            { id: "2-1", role: "user", content: "如何在Python中实现单例模式？" },
+            { id: "2-2", role: "assistant", content: "在Python中实现单例模式有多种方法，最常见的是使用装饰器、元类或模块级别的实现。其中元类方法是最Pythonic的方式，通过重写__call__方法控制实例创建。" },
+            { id: "2-3", role: "user", content: "能给我一个示例代码吗？" },
+            { id: "2-4", role: "assistant", content: "当然可以，这是一个使用元类实现单例模式的示例：\n\nclass SingletonMeta(type):\n    _instances = {}\n    def __call__(cls, *args, **kwargs):\n        if cls not in cls._instances:\n            cls._instances[cls] = super().__call__(*args, **kwargs)\n        return cls._instances[cls]" }
+          ]
+        },
+        {
+          id: "3",
+          title: "知识库查询测试",
+          icon: "fa-search",
+          list: [
+            { id: "3-1", role: "user", content: "什么是Pinia？" },
+            { id: "3-2", role: "assistant", content: "Pinia是Vue.js的状态管理库，是Vuex的继任者。它提供了更简洁的API，更好的TypeScript支持，以及更灵活的状态管理方式。" },
+            { id: "3-3", role: "user", content: "它和Vuex有什么主要区别？" },
+            { id: "3-4", role: "assistant", content: "Pinia与Vuex的主要区别包括：没有Mutation，直接通过Action修改状态；更好的TypeScript集成；不需要嵌套模块，可以平级组织store；支持组合式API风格等。" }
+          ]
+        }
+      ];
+      this.KnowledgeBaseItem = [];
+      this.kg_knowledgeBaseItem = [];
     }
   },
   persist: true
