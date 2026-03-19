@@ -57,16 +57,18 @@
             @click="triggerFileInput"
           >
             <i class="fa fa-plus"></i>
-            <span>上传文件</span>
+            <span>上传文件/文件夹</span>
           </button>
 
-          <!-- 隐藏的文件选择器 -->
+          <!-- 隐藏的文件选择器，支持多文件和文件夹选择 -->
           <input
             ref="fileInputRef"
             type="file"
             class="hidden"
             accept=".txt,.md,.pdf,.docx,.doc,.json"
             multiple
+            webkitdirectory
+            directory
             @change="handleFileSelect"
           />
         </div>
@@ -170,34 +172,44 @@ const handleFileSelect = async (e: Event) => {
 
   uploading.value = true;
   try {
-    console.log(`文件 ${files.length} 数量`);
+    console.log(`选择 ${files.length} 个文件`);
 
-    for (const file of Array.from(files)) {
-      // 构建 FormData
-      const formData = new FormData();
-      formData.append('file', file); // 后端接收的字段名
-      formData.append('namespace', 'uid_12345'); // 示例命名空间，实际可根据需求动态生成
-      formData.append('agent_id', 'uid_12345');
-      formData.append('session_id', `session_${Date.now()}`);
+    // 构建 FormData，支持多文件上传
+    const formData = new FormData();
+    // 为每个文件添加 file 字段（同名），后端接收 List[UploadFile]
+    Array.from(files).forEach(file => {
+      formData.append('file', file);
+    });
+    // 其他参数
+    formData.append('namespace', 'uid_12345');
+    formData.append('agent_id', 'uid_12345');
+    formData.append('session_id', `session_${Date.now()}`);
 
-      // 发送上传请求
-      // const response = await fetch(`${apiUrl.value}ingest/file`, {
-      //   method: 'POST',
-      //   body: formData, 
-      // });
-      const response = await fetch(`${apiUrl.value}new_update_file/new_update_file`, {
-        method: 'POST',
-        body: formData, 
-      });
+    // 发送上传请求
+    const response = await fetch(`${apiUrl.value}new_update_file/new_update_file`, {
+      method: 'POST',
+      body: formData,
+    });
 
-      if (!response.ok) throw new Error(`文件 ${file.name} 上传失败`);
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.data || '上传失败');
+    }
 
-      console.log(`文件 ${file.name} 上传成功`); 
+    // 根据后端返回的成功/失败信息提示用户
+    if (result.success) {
+      alert(result.data);
+    } else {
+      // 部分文件失败
+      let errorMsg = result.data;
+      if (result.errors && result.errors.length > 0) {
+        errorMsg += '\n失败文件：' + result.errors.map((e: any) => e.filename).join(', ');
+      }
+      alert(errorMsg);
     }
 
     // 上传成功后刷新列表
     // await fetchFileList();
-    alert('文件上传成功！');
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "文件上传失败";
     console.error("上传失败：", errorMsg);
