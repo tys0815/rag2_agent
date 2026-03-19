@@ -41,7 +41,7 @@ class HelloAgentsLLM:
         base_url: Optional[str] = None,
         provider: Optional[SUPPORTED_PROVIDERS] = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = 1000,
         timeout: Optional[int] = None,
         **kwargs
     ):

@@ -16,56 +16,10 @@ logger = logging.getLogger(__name__)
 class KnowledgeBaseAssistant(PlanAndSolveAgent):
     """
     企业知识库助手（休假/考勤/制度/报销专用）
-    基于【正负样本对比】做意图判断，不会把“你好”当成检索
+    基于【LLM意图判断】做检索路由，无关键词、无向量、纯大模型决策
     """
 
-    # ======================= 【正样本】需要检索 =======================
-    RETRIEVAL_INTENT_EXAMPLES = [
-        "请假规则",
-        "休假怎么申请",
-        "年假有几天",
-        "病假需要什么证明",
-        "婚假多少天",
-        "产假多少天",
-        "陪产假规定",
-        "事假能不能申请",
-        "考勤制度",
-        "迟到早退怎么算",
-        "加班申请流程",
-        "报销流程",
-        "报销标准",
-        "出差申请",
-        "公司规章制度",
-        "员工手册",
-        "绩效考核",
-        "IT设备申领",
-        "网络安全规范",
-        "会议室预订"
-    ]
-
-    # ======================= 【负样本】不需要检索（闲聊/问候） =======================
-    NON_RETRIEVAL_EXAMPLES = [
-        "你好",
-        "你好呀",
-        "哈喽",
-        "嗨",
-        "在吗",
-        "在不在",
-        "谢谢",
-        "感谢",
-        "再见",
-        "拜拜",
-        "早上好",
-        "晚上好",
-        "你是谁",
-        "你叫什么",
-        "哈哈",
-        "哦",
-        "嗯",
-        "好的",
-        "知道了",
-        "随便问问"
-    ]
+    # 已删除：正负样本、关键词、嵌入向量相关全部内容
 
     def __init__(
         self,
@@ -79,7 +33,7 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
         max_tool_iterations: int = 1,
         workspace: str = ".",
         tool_call_listener: Optional[Any] = None,
-        retrieval_threshold: float = 0.3,  # 【关键】正负差值阈值
+        retrieval_threshold: float = 0.3,
         **kwargs
     ):
         super().__init__(
@@ -98,108 +52,52 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
         self.tool_call_listener = tool_call_listener
         self.llm_client = llm
 
-        # 意图阈值 → 现在是【差值阈值】
-        self.retrieval_threshold = retrieval_threshold
+        # 已删除：嵌入模型、关键词、样本向量初始化
 
-        # 嵌入模型
-        self._use_simple_classifier = False
-        self._intent_embeddings: List[np.ndarray] = []
-        self._non_intent_embeddings: List[np.ndarray] = []
-        self._intent_keywords: List[str] = []
+        logger.info(f"知识库助手初始化完成 | 路由模式：纯LLM意图判断")
 
-        try:
-            self.embedder = get_text_embedder()
-            if hasattr(self.embedder, 'fit'):
-                try:
-                    all_examples = self.RETRIEVAL_INTENT_EXAMPLES + self.NON_RETRIEVAL_EXAMPLES
-                    if hasattr(self.embedder, 'reset'):
-                        self.embedder.reset()
-                    self.embedder.fit(all_examples)
-                    logger.info("嵌入模型训练完成")
-                except Exception as e:
-                    logger.warning(f"模型训练失败: {e}")
-
-            # 向量化 正/负 样本
-            self._intent_embeddings = self._encode_list(self.RETRIEVAL_INTENT_EXAMPLES)
-            self._non_intent_embeddings = self._encode_list(self.NON_RETRIEVAL_EXAMPLES)
-
-        except Exception as e:
-            logger.warning(f"嵌入模型初始化失败: {e}，使用关键词匹配")
-            self._use_simple_classifier = True
-            self.embedder = None
-            self._intent_keywords = self._extract_keywords(self.RETRIEVAL_INTENT_EXAMPLES)
-
-        logger.info(f"知识库助手初始化完成 | 检索例句:{len(self.RETRIEVAL_INTENT_EXAMPLES)} 闲聊例句:{len(self.NON_RETRIEVAL_EXAMPLES)}")
-
-    def _encode_list(self, texts: List[str]) -> List[np.ndarray]:
-        """批量编码文本为向量"""
-        embeddings = self.embedder.encode(texts)
-        if isinstance(embeddings, np.ndarray):
-            return [embeddings[i] for i in range(embeddings.shape[0])]
-        return [np.array(emb) for emb in embeddings]
-
-    def _extract_keywords(self, examples: List[str]) -> List[str]:
-        keywords = set()
-        for s in examples:
-            words = s.replace('?',' ').replace('？',' ').replace('，',' ').replace('。',' ').split()
-            for w in words:
-                if len(w) >= 1:
-                    keywords.add(w)
-        return list(keywords)
-
-    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        return float(np.dot(vec1, vec2) / (norm1 * norm2))
-
-    # ======================= 【最终修复】意图判断 =======================
+    # ======================= 【核心：纯 LLM 意图判断】 =======================
     def should_retrieve(self, query: str, agent_id: str = "default") -> Tuple[bool, float]:
         """
-        return (是否需要检索, 最终置信度得分)
-        【企业级最终版】规则前置 + 向量验证，100%不误判
+        return (是否需要检索, 置信度得分)
+        企业级：纯LLM意图路由，无关键词、无向量
         """
-        # 空查询直接不检索
         if not query or not isinstance(query, str):
             return False, 0.0
 
-        query_clean = query.strip().lower()
-
-        # ===================== 【最强规则：必须加】 =====================
-        # 企业人事/行政/考勤/报销核心业务词
-        BUSINESS_WORDS = {
-            "请假", "休假", "年假", "病假", "婚假", "产假", "陪产假", "事假",
-            "考勤", "迟到", "早退", "加班", "报销", "出差", "制度", "手册",
-            "绩效", "设备", "网络", "会议室", "预订", "申请", "流程", "标准"
-        }
-        # 不包含任何业务关键词 → 直接不检索（根治乱触发）
-        if not any(word in query_clean for word in BUSINESS_WORDS):
-            logger.info(f"无业务关键词，跳过检索：{query}")
-            return False, 0.0
-        # ==============================================================
-
-        # 关键词兜底
-        if self._use_simple_classifier:
-            hit = sum(1 for kw in self._intent_keywords if kw in query_clean)
-            score = min(hit / 2.0, 1.0)
-            need = score >= 0.3
-            return need, score
-
-        # 向量版本
         try:
-            q_emb = np.array(self.embedder.encode(query))
-        except:
+            # 企业级标准路由提示词（严格输出，无任何多余内容）
+            prompt = f"""
+你是企业内部知识库路由引擎，只做二分类判断，严格输出结果。
+
+任务：判断用户问题是否需要查询【内部制度/考勤/休假/报销/开发文档】。
+
+输出规则（必须严格遵守）：
+- 需要查询 → 输出：NEED_QUERY
+- 不需要查询（闲聊/问候/通用知识）→ 输出：NO_QUERY
+
+禁止解释、禁止聊天、禁止加标点、只输出指令内容！
+
+用户问题：{query}
+            """
+
+            # 调用你的LLM（与项目原有 llm_client 保持一致）
+            messages = [{"role": "user", "content": prompt}]
+            response = self.llm_client.invoke(messages)
+            resp_text = response.strip().upper()
+            # 解析结果
+            if "NEED_QUERY" in resp_text:
+                logger.info(f"LLM判定需要检索：{query}")
+                return True, 1.0
+            else:
+                logger.info(f"LLM判定无需检索：{query}")
+                return False, 0.0
+
+        except Exception as e:
+            logger.error(f"LLM意图判断失败：{e}，默认不检索")
             return False, 0.0
 
-        max_ret = max(self._cosine_similarity(q_emb, emb) for emb in self._intent_embeddings)
-        need = max_ret >= 0.5
-        final_score = round(max_ret, 2)
-
-        logger.debug(f"查询:{query} | 业务相似度:{max_ret:.2f} → 检索:{need}")
-        return need, final_score
-
-    # ======================= 以下保持你原有逻辑不变 =======================
+    # ======================= 以下完全保持你原有逻辑不动 =======================
     def _get_context_builder(self) -> Optional[ContextBuilder]:
         if not self.tool_registry:
             return None
@@ -255,7 +153,17 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
 
         if not should:
             logger.info(f"无需检索，直接LLM回答 | score={score:.2f}")
-            return super().run(input_text, **kwargs)
+            direct_answer_prompt = f"""
+            你是企业内部智能助手，请友好、简洁、专业地回答用户问题。
+
+            如果是闲聊、问候、通用知识，请直接回答。
+            如果是不清楚的问题，请礼貌回复：“抱歉，我无法回答这个问题。”
+
+            用户问题：{input_text}
+            """
+            messages = [{"role": "user", "content": direct_answer_prompt}]
+            
+            return self.llm_client.invoke(messages, **kwargs)
         else:
             logger.info(f"需要检索，执行RAG | score={score:.2f}")
             try:
@@ -283,7 +191,7 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
     ) -> str:
         should, score = self.should_retrieve(input_text)
         if not should:
-            return super().run(input_text, **kwargs)
+            return super().run(input_text,** kwargs)
         logger.info("run() 缺少上下文，直接LLM回答")
         return super().run(input_text, **kwargs)
 
@@ -298,8 +206,7 @@ def create_universal_assistant(
         name=name,
         llm=llm,
         system_prompt=system_prompt,
-        workspace=workspace,
-        **kwargs
+        workspace=workspace,** kwargs
     )
 
 UniversalEnterpriseAgent = KnowledgeBaseAssistant
