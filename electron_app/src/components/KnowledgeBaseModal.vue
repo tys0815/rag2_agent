@@ -178,7 +178,7 @@ const handleFileSelect = async (e: Event) => {
     const formData = new FormData();
     // 为每个文件添加 file 字段（同名），后端接收 List[UploadFile]
     Array.from(files).forEach(file => {
-      formData.append('file', file);
+      formData.append('files', file);
     });
     // 其他参数
     formData.append('namespace', 'uid_12345');

@@ -1,104 +1,166 @@
-
-from fastapi import APIRouter, Request, UploadFile, File, Form, Depends
+from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException
 from typing import List
-
-from helloAgents.utils.helpers import get_file_path_from_upload_async
-
+from datetime import datetime
 import logging
+import os
+import asyncio
+import json  # 必须加
 
+from helloAgents.tools.async_executor import AsyncToolExecutor
+from helloAgents.utils.helpers import get_file_path_from_upload_async
 from helloAgents.tools.builtin.rag_tool import RAGTool
 from helloAgents.tools.builtin.memory_tool import MemoryTool
-
 from helloAgents.tools.registry import global_registry
 
-from dotenv import load_dotenv
-load_dotenv()
-
 logger = logging.getLogger(__name__)
-
 new_updateFile_router = APIRouter()
 
-from fastapi import UploadFile
-from datetime import datetime
-
+# 并发配置（根据你的机器调整）
+MAX_PARALLEL_FILES = 4
 
 
 @new_updateFile_router.post("/new_update_file")
 async def new_update_file(
     request: Request,
-    file: List[UploadFile] = File(..., description="要上传的文件列表（支持多文件或文件夹）"),
-    # 关键2：namespace 标注为 Form 类型（匹配前端 FormData 传参），并设置必填
-    namespace: str = Form(..., description="知识库命名空间")
-
+    files: List[UploadFile] = File(..., description="上传文件列表"),
+    namespace: str = Form(..., description="命名空间")
 ) -> dict:
-
+    """
+    🔥 最终企业版：
+    异步多文件上传 + 并发保存 + 多线程并行存入向量库 + 结构化返回
+    """
     rag_tool: RAGTool = global_registry.get_tool("rag")
-    # rag_tool.run({
-    #     "action": 'clear',
-    #     "confirm": True,
-    #     "namespace": namespace
-    # })
     memory_tool: MemoryTool = global_registry.get_tool("memory")
-    #
-    # memory_tool.run({
-    #     "action": "stats",
-    #     "user_id": namespace
-    # })
 
-    results = []
-    errors = []
+    # ======================
+    # 1. 基础校验
+    # ======================
+    if not files:
+        raise HTTPException(status_code=400, detail="请上传至少一个文件")
+    if not namespace.strip():
+        raise HTTPException(status_code=400, detail="命名空间不能为空")
 
-    for upload_file in file:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ======================
+    # 2. 异步并发保存所有文件
+    # ======================
+    async def save_single_file(upload_file: UploadFile):
         try:
-            file_path = await get_file_path_from_upload_async(upload_file, namespace=namespace, save_dir="./knowledge_base")
-            result = rag_tool.add_document(file_path, namespace=namespace)
+            file_path = await get_file_path_from_upload_async(
+                upload_file, namespace=namespace, save_dir="./knowledge_base"
+            )
+            return {
+                "filename": upload_file.filename,
+                "file_path": file_path,
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"文件保存失败 {upload_file.filename}: {str(e)}")
+            return {
+                "filename": upload_file.filename,
+                "error": str(e),
+                "success": False
+            }
+
+    # 并发保存
+    save_tasks = [save_single_file(f) for f in files]
+    save_results = await asyncio.gather(*save_tasks)
+
+    # 分类成功/失败
+    saved_files = [r for r in save_results if r["success"]]
+    save_errors = [r for r in save_results if not r["success"]]
+
+    # 记录保存失败记忆
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for err in save_errors:
+        memory_tool.run({
+            "action": "add",
+            "user_id": namespace,
+            "memory_type": "perceptual",
+            "content": f"{now} 用户{namespace}上传文件 {err['filename']} 保存失败：{err['error']}",
+            "file_path": ""
+        })
+
+    if not saved_files:
+        return {
+            "success": False,
+            "msg": "所有文件保存失败",
+            "results": [],
+            "errors": save_errors
+        }
+
+    # ======================
+    # 3. 🔥 核心：使用你的 AsyncToolExecutor 并行入库向量库
+    # ======================
+    file_paths = [f["file_path"] for f in saved_files]
+
+    # 构造批量任务（每个文件 = 1个RAG入库任务）
+    rag_tasks = [
+        {
+            "tool_name": "rag",
+            "input_data": json.dumps({
+                "action": "add_document",
+                "file_path": fp,
+                "namespace": namespace
+            })
+        }
+        for fp in file_paths
+    ]
+
+    # 并行执行（真正多文件同时入库）
+    executor = AsyncToolExecutor(global_registry, max_workers=MAX_PARALLEL_FILES)
+    execute_results = await executor.execute_tools_parallel(rag_tasks)
+
+    # ======================
+    # 4. 根据执行结果记录记忆
+    # ======================
+    success_list = []
+    fail_list = []
+
+    for idx, file_info in enumerate(saved_files):
+        res = execute_results[idx]
+        filename = file_info["filename"]
+        file_path = file_info["file_path"]
+
+        if res["status"] == "success":
+            # 成功 → 语义记忆
+            success_list.append({
+                "filename": filename,
+                "file_path": file_path
+            })
             memory_tool.run({
                 "action": "add",
                 "user_id": namespace,
                 "memory_type": "semantic",
-                "content": f"{now} 用户{namespace}已上传文件：{upload_file.filename}，存储路径：{file_path}"
-            })
-            results.append({
-                "filename": upload_file.filename,
-                "success": True,
-                "data": result,
+                "content": f"{now} 用户{namespace}已上传文件：{filename}，已入库知识库",
                 "file_path": file_path
             })
-        except Exception as e:
-            # 如果文件保存失败，file_path 可能不存在
-            file_path = ""
-            try:
-                # 尝试保存文件获取路径，用于记忆
-                file_path = await get_file_path_from_upload_async(upload_file, namespace=namespace, save_dir="./knowledge_base")
-            except Exception:
-                pass
+        else:
+            # 失败 → 感知记忆
+            fail_list.append({
+                "filename": filename,
+                "error": res["result"]
+            })
             memory_tool.run({
                 "action": "add",
                 "user_id": namespace,
                 "memory_type": "perceptual",
-                "content": f"{now} 用户{namespace}已上传文件：{upload_file.filename}失败，转为感知记忆存储，存储路径：{file_path}",
+                "content": f"{now} 用户{namespace}文件 {filename} 处理失败：{res['result']}",
                 "file_path": file_path
             })
-            errors.append({
-                "filename": upload_file.filename,
-                "error": str(e)
-            })
 
-    if errors:
-        return {
-            "success": False,
-            "data": f"部分文件上传失败，成功 {len(results)} 个，失败 {len(errors)} 个",
-            "results": results,
-            "errors": errors
-        }
-    else:
-        return {
-            "success": True,
-            "data": f"所有文件上传成功，共 {len(results)} 个",
-            "results": results
-        }
-
-
-    
-    
+    # ======================
+    # 5. 统一返回
+    # ======================
+    return {
+        "success": len(fail_list) == 0,
+        "msg": f"成功 {len(success_list)} 个，失败 {len(fail_list)} 个",
+        "data": {
+            "total_files": len(files),
+            "saved_success": len(saved_files),
+            "vector_success": len(success_list),
+            "vector_failed": len(fail_list),
+            "namespace": namespace
+        },
+        "results": success_list,
+        "errors": fail_list
+    }
