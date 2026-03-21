@@ -9,7 +9,7 @@ from ..core.config import Config
 from ..tools.registry import ToolRegistry
 from ..context import ContextBuilder, ContextConfig
 from ..memory.embedding import get_text_embedder
-
+from helloAgents.core.exceptions import ToolException
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +70,7 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
             prompt = f"""
 你是企业内部知识库路由引擎，只做二分类判断，严格输出结果。
 
-任务：判断用户问题是否需要查询【内部制度/考勤/休假/报销/开发文档】。
+任务：判断用户问题是否需要查询【内部制度/考勤/休假/报销/开发文档/测试文档】。
 
 输出规则（必须严格遵守）：
 - 需要查询 → 输出：NEED_QUERY
@@ -87,10 +87,10 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
             resp_text = response.strip().upper()
             # 解析结果
             if "NEED_QUERY" in resp_text:
-                logger.info(f"LLM判定需要检索：{query}")
+                logger.info(f"LLM判定需要检索：{query}{resp_text}")
                 return True, 1.0
             else:
-                logger.info(f"LLM判定无需检索：{query}")
+                logger.info(f"LLM判定无需检索：{query}{resp_text}")
                 return False, 0.0
 
         except Exception as e:
@@ -170,7 +170,7 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
                 rag_tool = self.tool_registry.get_tool("rag")
                 return rag_tool.run({
                     "action": "ask",
-                    "query": input_text,
+                    "question": input_text,
                     "limit": 5,
                     "user_id": user_id,
                     "agent_id": agent_id,
@@ -179,8 +179,11 @@ class KnowledgeBaseAssistant(PlanAndSolveAgent):
                     "min_score": 0.75
                 })
             except Exception as e:
-                logger.error(f"RAG调用失败: {e}")
-                return super().run(input_text, **kwargs)
+                # 只做日志，不吞异常！
+                logger.error(f"RAG调用失败: {e}", exc_info=True)
+
+                # 业务异常 → 包装成自定义异常往外抛
+                raise ToolException(f"RAG工具调用失败：{str(e)}") from e
 
     def run(
         self,

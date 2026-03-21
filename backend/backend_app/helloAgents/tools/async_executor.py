@@ -5,6 +5,8 @@ import concurrent.futures
 from typing import Dict, Any, List
 from .registry import ToolRegistry
 
+import time
+
 
 class AsyncToolExecutor:
     """异步工具执行器"""
@@ -13,7 +15,7 @@ class AsyncToolExecutor:
         self.registry = registry
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
-    async def execute_tool_async(self, tool_name: str, input_data: str) -> str:
+    async def execute_tool_async(self, tool_name: str, input_data: dict) -> str:
         """异步执行单个工具"""
         loop = asyncio.get_event_loop()
         
@@ -26,55 +28,56 @@ class AsyncToolExecutor:
         except Exception as e:
             return f"❌ 工具 '{tool_name}' 异步执行失败: {e}"
 
-    async def execute_tools_parallel(self, tasks: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+
+    async def execute_tools_parallel(self, tasks: List[Dict]) -> List[Dict[str, Any]]:
         """
-        并行执行多个工具
-        
-        Args:
-            tasks: 任务列表，每个任务包含 tool_name 和 input_data
-            
-        Returns:
-            执行结果列表，包含任务信息和结果
+        真正并行执行 + 时间戳打印（判断是否并发）
         """
-        print(f"🚀 开始并行执行 {len(tasks)} 个工具任务")
-        
-        # 创建异步任务
+        print(f"\n🚀 开始并行执行 {len(tasks)} 个任务，当前时间：{time.strftime('%H:%M:%S')}")
+
         async_tasks = []
+        task_list = []
+
         for i, task in enumerate(tasks):
             tool_name = task.get("tool_name")
-            input_data = task.get("input_data", "")
-            
+            input_data = task.get("input_data", {})
             if not tool_name:
                 continue
-                
-            print(f"📝 创建任务 {i+1}: {tool_name}")
-            async_task = self.execute_tool_async(tool_name, input_data)
-            async_tasks.append((i, task, async_task))
-        
-        # 等待所有任务完成
+
+            # 包装任务，加入【开始执行】打印
+            async def wrapped_task(idx, t_name, data):
+                print(f"➡️ 任务 {idx+1} 开始执行 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
+                res = await self.execute_tool_async(t_name, data)
+                print(f"✅ 任务 {idx+1} 执行完成 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
+                return res
+
+            async_tasks.append(wrapped_task(i, tool_name, input_data))
+            task_list.append(task)
+
+        # ======================
+        # 🔥 真正并行：全部同时运行
+        # ======================
+        results_raw = await asyncio.gather(*async_tasks, return_exceptions=True)
+
+        print(f"\n🎉 全部并行执行完成 | 结束时间：{time.strftime('%H:%M:%S')}")
+
+        # 组装结果
         results = []
-        for i, task, async_task in async_tasks:
-            try:
-                result = await async_task
+        for idx, (task, result) in enumerate(zip(task_list, results_raw)):
+            if isinstance(result, Exception):
                 results.append({
-                    "task_id": i,
+                    "task_id": idx,
                     "tool_name": task["tool_name"],
-                    "input_data": task["input_data"],
-                    "result": result,
-                    "status": "success"
+                    "status": "error",
+                    "result": str(result)
                 })
-                print(f"✅ 任务 {i+1} 完成: {task['tool_name']}")
-            except Exception as e:
+            else:
                 results.append({
-                    "task_id": i,
+                    "task_id": idx,
                     "tool_name": task["tool_name"],
-                    "input_data": task["input_data"],
-                    "result": str(e),
-                    "status": "error"
+                    "status": "success",
+                    "result": result
                 })
-                print(f"❌ 任务 {i+1} 失败: {task['tool_name']} - {e}")
-        
-        print(f"🎉 并行执行完成，成功: {sum(1 for r in results if r['status'] == 'success')}/{len(results)}")
         return results
 
     async def execute_tools_batch(self, tool_name: str, input_list: List[str]) -> List[Dict[str, Any]]:

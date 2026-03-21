@@ -22,17 +22,29 @@ if BACKEND_APP_DIR not in sys.path:
     logger.info(f"✅ 已将 backend_app 加入搜索路径: {BACKEND_APP_DIR}")
 
 # FastAPI 核心导入
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from helloAgents.tools.registry import global_registry
 from helloAgents.tools.builtin.rag_tool import RAGTool  # RAG工具类
-from helloAgents.tools.builtin.memory_tool import MemoryTool  # 记忆工具类
+from helloAgents.tools.builtin.memory_tool  import MemoryTool  # 记忆工具类
 from helloAgents.tools.builtin.terminal_tool import TerminalTool  # 命令行工具类
 from helloAgents.tools.builtin.search_tool import SearchTool  # 搜索工具类
 from helloAgents.tools.builtin.calculator import CalculatorTool  # 计算器工具类
 from helloAgents.tools.builtin.note_tool import NoteTool  # 笔记工具类
 from helloAgents.tools.builtin.protocol_tools import MCPTool, A2ATool, ANPTool  # 协议工具类
+from helloAgents.core.exceptions import (
+    HelloAgentsException,
+    http_exception_handler,
+    hello_agents_exception_handler,
+    general_exception_handler
+)
+
+import logging
+
+# 关闭 pdfminer 烦人的警告
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+logging.getLogger("pdfminer.pdffont").setLevel(logging.ERROR)
 
 
 import torch
@@ -242,6 +254,13 @@ try:
 except ImportError as e:
     logger.error(f"❌ 导入API路由失败: {e}")
     raise
+
+# ---------------------- 注册全局异常处理器 ----------------------
+# 统一处理HTTP异常、业务异常和未知异常
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(HelloAgentsException, hello_agents_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+logger.info("✅ 全局异常处理器已注册")
 
 # ---------------------- 辅助接口：工具管理 ----------------------
 @app.get("/")

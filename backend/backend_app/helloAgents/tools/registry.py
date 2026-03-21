@@ -82,7 +82,7 @@ class ToolRegistry:
         func_info = self._functions.get(name)
         return func_info["func"] if func_info else None
 
-    def execute_tool(self, name: str, input_text: str) -> str:
+    def execute_tool(self, name: str, input_text: dict) -> str:
         """
         执行工具
 
@@ -97,7 +97,10 @@ class ToolRegistry:
         if name in self._tools:
             tool = self._tools[name]
             try:
-                # 简化参数传递，直接传入字符串
+                # 简化参数传递，直接传入字典
+                if name == "rag":
+                    return tool.run(parameters=input_text)
+
                 return tool.run({"input": input_text})
             except Exception as e:
                 return f"错误：执行工具 '{name}' 时发生异常: {str(e)}"

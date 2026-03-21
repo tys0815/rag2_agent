@@ -51,6 +51,8 @@ class RAGTool(Tool):
         load_balance_strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
         cache_size: int = 1000,
         cache_ttl: int = 300,
+        redis_config: Optional[Dict[str, Any]] = None,
+        redis_ttl: int = 3600,
         **load_balancer_kwargs
     ):
         super().__init__(
@@ -100,9 +102,25 @@ class RAGTool(Tool):
         # 查询缓存配置
         self.cache_size = cache_size
         self.cache_ttl = cache_ttl
-        self.query_cache: Dict[str, Dict[str, Any]] = {}
+
+        # 1. 本地LRU缓存（热点查询）
+        self.local_cache: Dict[str, Dict[str, Any]] = {}
         self.cache_timestamps: Dict[str, float] = {}
         self.cache_keys: List[str] = []  # 用于LRU顺序
+
+        # 2. 分布式缓存（Redis）- 企业级部署必选
+        self.redis_cache = None
+        self.redis_ttl = redis_ttl
+        if redis_config:
+            try:
+                import redis
+                self.redis_cache = redis.Redis(**redis_config)
+                # 测试连接
+                self.redis_cache.ping()
+                print(f"✅ Redis缓存连接成功，TTL: {redis_ttl}秒")
+            except Exception as e:
+                print(f"⚠️ Redis缓存连接失败: {e}，将仅使用本地缓存")
+                self.redis_cache = None
 
         # 缓存统计
         self.cache_hits = 0
@@ -132,7 +150,7 @@ class RAGTool(Tool):
         return "|".join(key_parts)
 
     def _get_cached_result(self, cache_key: str) -> Optional[Any]:
-        """从缓存获取结果
+        """从缓存获取结果（分层缓存设计）
 
         Args:
             cache_key: 缓存键
@@ -140,30 +158,44 @@ class RAGTool(Tool):
         Returns:
             缓存结果，如果不存在或已过期则返回None
         """
-        # 检查缓存是否存在
-        if cache_key not in self.query_cache:
-            self.cache_misses += 1
-            return None
+        # 1. 优先查本地LRU缓存
+        if cache_key in self.local_cache:
+            # 检查是否过期
+            if cache_key in self.cache_timestamps:
+                timestamp = self.cache_timestamps[cache_key]
+                if time.time() - timestamp > self.cache_ttl:
+                    # 过期，清理
+                    self._remove_from_local_cache(cache_key)
+                    self.cache_misses += 1
+                    return None
 
-        # 检查是否过期
-        if cache_key in self.cache_timestamps:
-            timestamp = self.cache_timestamps[cache_key]
-            if time.time() - timestamp > self.cache_ttl:
-                # 过期，清理
-                self._remove_from_cache(cache_key)
-                self.cache_misses += 1
-                return None
+            # 更新LRU顺序
+            if cache_key in self.cache_keys:
+                self.cache_keys.remove(cache_key)
+                self.cache_keys.append(cache_key)
 
-        # 更新LRU顺序
-        if cache_key in self.cache_keys:
-            self.cache_keys.remove(cache_key)
-            self.cache_keys.append(cache_key)
+            self.cache_hits += 1
+            return self.local_cache[cache_key]
 
-        self.cache_hits += 1
-        return self.query_cache[cache_key]
+        # 2. 再查Redis缓存
+        if self.redis_cache:
+            try:
+                import json
+                redis_result = self.redis_cache.get(cache_key)
+                if redis_result:
+                    result = json.loads(redis_result)
+                    # 回写本地缓存
+                    self._set_to_local_cache(cache_key, result)
+                    self.cache_hits += 1
+                    return result
+            except Exception as e:
+                print(f"⚠️ Redis缓存读取失败: {e}")
 
-    def _set_cached_result(self, cache_key: str, result: Any) -> None:
-        """将结果存入缓存
+        self.cache_misses += 1
+        return None
+
+    def _set_to_local_cache(self, cache_key: str, result: Any) -> None:
+        """将结果存入本地LRU缓存
 
         Args:
             cache_key: 缓存键
@@ -172,23 +204,61 @@ class RAGTool(Tool):
         # 如果缓存已满，移除最旧的条目
         if len(self.cache_keys) >= self.cache_size and self.cache_keys:
             oldest_key = self.cache_keys.pop(0)
-            self._remove_from_cache(oldest_key)
+            self._remove_from_local_cache(oldest_key)
 
         # 存储结果和时间戳
-        self.query_cache[cache_key] = result
+        self.local_cache[cache_key] = result
         self.cache_timestamps[cache_key] = time.time()
         self.cache_keys.append(cache_key)
 
-    def _remove_from_cache(self, cache_key: str) -> None:
-        """从缓存中移除条目
+    def _remove_from_local_cache(self, cache_key: str) -> None:
+        """从本地缓存中移除条目
 
         Args:
             cache_key: 缓存键
         """
-        self.query_cache.pop(cache_key, None)
+        self.local_cache.pop(cache_key, None)
         self.cache_timestamps.pop(cache_key, None)
         if cache_key in self.cache_keys:
             self.cache_keys.remove(cache_key)
+
+    def _set_cached_result(self, cache_key: str, result: Any) -> None:
+        """将结果存入缓存（分层缓存设计）
+
+        Args:
+            cache_key: 缓存键
+            result: 要缓存的结果
+        """
+        # 1. 写入本地LRU缓存
+        self._set_to_local_cache(cache_key, result)
+
+        # 2. 写入Redis缓存
+        if self.redis_cache:
+            try:
+                import json
+                self.redis_cache.setex(
+                    cache_key,
+                    self.redis_ttl,
+                    json.dumps(result, ensure_ascii=False)
+                )
+            except Exception as e:
+                print(f"⚠️ Redis缓存写入失败: {e}")
+
+    def _remove_from_cache(self, cache_key: str) -> None:
+        """从缓存中移除条目（向后兼容）
+
+        Args:
+            cache_key: 缓存键
+        """
+        # 调用新的本地缓存移除方法
+        self._remove_from_local_cache(cache_key)
+
+        # 同时从Redis缓存中移除（如果存在）
+        if self.redis_cache:
+            try:
+                self.redis_cache.delete(cache_key)
+            except Exception as e:
+                print(f"⚠️ Redis缓存删除失败: {e}")
 
     def _clean_expired_cache(self) -> None:
         """清理过期缓存"""
@@ -209,13 +279,13 @@ class RAGTool(Tool):
             namespace: 命名空间名称
         """
         keys_to_remove = []
-        for cache_key in self.query_cache.keys():
+        for cache_key in self.local_cache.keys():
             # 检查缓存键是否包含该命名空间
             if f"namespace={namespace}" in cache_key:
                 keys_to_remove.append(cache_key)
 
         for cache_key in keys_to_remove:
-            self._remove_from_cache(cache_key)
+            self._remove_from_local_cache(cache_key)
 
         if keys_to_remove:
             print(f"🧹 已清理命名空间 '{namespace}' 的 {len(keys_to_remove)} 个缓存条目")
@@ -243,8 +313,27 @@ class RAGTool(Tool):
         total_requests = self.cache_hits + self.cache_misses
         hit_rate = self.cache_hits / total_requests if total_requests > 0 else 0
 
+        # Redis缓存统计
+        redis_stats = {}
+        if self.redis_cache:
+            try:
+                redis_info = self.redis_cache.info()
+                redis_stats = {
+                    "redis_connected": True,
+                    "redis_used_memory": redis_info.get("used_memory_human", "unknown"),
+                    "redis_keys": redis_info.get("db0", {}).get("keys", 0),
+                    "redis_ttl": self.redis_ttl
+                }
+            except Exception as e:
+                redis_stats = {
+                    "redis_connected": False,
+                    "redis_error": str(e)
+                }
+        else:
+            redis_stats = {"redis_connected": False}
+
         return {
-            "total_entries": len(self.query_cache),
+            "total_entries": len(self.local_cache),
             "cache_size": self.cache_size,
             "cache_ttl": self.cache_ttl,
             "expired_entries": expired_count,
@@ -253,6 +342,9 @@ class RAGTool(Tool):
             "misses": self.cache_misses,
             "total_requests": total_requests,
             "hit_rate": hit_rate,
+            "redis": redis_stats,
+            "cache_type": "layered_cache",
+            "cache_layers": ["local_lru", "redis"] if self.redis_cache else ["local_lru"]
         }
 
     def reset_cache_stats(self) -> None:
@@ -378,9 +470,8 @@ class RAGTool(Tool):
                     chunk_overlap=parameters.get("chunk_overlap", 100)
                 )
             elif action == "ask":
-                question = parameters.get("question") or parameters.get("query")
                 return self._ask(
-                    question=question,
+                    question=parameters.get("question"),
                     limit=parameters.get("limit", 5),
                     enable_advanced_search=parameters.get("enable_advanced_search", True),
                     include_citations=parameters.get("include_citations", True),
@@ -389,7 +480,7 @@ class RAGTool(Tool):
                 )
             elif action == "search":
                 return self._search(
-                    query=parameters.get("query") or parameters.get("question"),
+                    query=parameters.get("query"),
                     limit=parameters.get("limit", 5),
                     min_score=parameters.get("min_score", 0.1),
                     enable_advanced_search=parameters.get("enable_advanced_search", True),

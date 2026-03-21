@@ -2,15 +2,20 @@
 提供全能企业级助手功能，集成RAG、记忆、命令行、MCP等工具
 """
 
-from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
-import logging
+import re
 from datetime import datetime
+from fastapi import APIRouter, Request, HTTPException, Depends
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Dict, Any, Annotated
+import logging
 
 from helloAgents.agents.universal_enterprise_agent import UniversalEnterpriseAgent, create_universal_assistant
 from helloAgents.core.llm import HelloAgentsLLM
 from helloAgents.tools.registry import global_registry
+from helloAgents.core.exceptions import (
+    HelloAgentsException,
+    ToolException
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +49,44 @@ def get_universal_agent() -> UniversalEnterpriseAgent:
     return _universal_agent
 
 
+# ==================== 依赖注入函数 ====================
+
+def get_agent_service() -> UniversalEnterpriseAgent:
+    """依赖注入：获取Agent服务实例"""
+    return get_universal_agent()
+
+
+# 类型别名，用于依赖注入
+AgentService = Annotated[UniversalEnterpriseAgent, Depends(get_agent_service)]
+
+
 # ==================== 请求/响应模型 ====================
 
 class UniversalChatRequest(BaseModel):
     """全能聊天请求"""
-    text: str = Field(..., description="用户输入的文本")
+    text: str = Field(..., description="用户输入的文本", max_length=5000)
     user_id: str = Field(..., description="用户ID（必需）")
     agent_id: Optional[str] = Field("universal_assistant", description="助手ID（默认为universal_assistant）")
     session_id: Optional[str] = Field(None, description="会话ID（可选，不传则自动生成）")
     namespace: Optional[str] = Field(None, description="知识库命名空间（默认为user_id）")
     enable_memory: Optional[bool] = Field(True, description="是否启用记忆")
     enable_rag: Optional[bool] = Field(True, description="是否启用RAG检索")
-    max_context_length: Optional[int] = Field(2000, description="最大上下文长度")
+    max_context_length: Optional[int] = Field(2000, description="最大上下文长度", ge=100, le=8000)
     tool_choice: Optional[str] = Field("auto", description="工具选择策略")
+
+    @field_validator("user_id")
+    def validate_user_id(cls, v):
+        """验证用户ID格式"""
+        if not re.match(r"^[a-zA-Z0-9_-]{3,50}$", v):
+            raise ValueError("用户ID只能包含字母、数字、下划线和短横线，长度3-50")
+        return v
+
+    @field_validator("namespace")
+    def validate_namespace(cls, v):
+        """验证命名空间格式"""
+        if v and not re.match(r"^[a-zA-Z0-9_-]{1,100}$", v):
+            raise ValueError("命名空间只能包含字母、数字、下划线和短横线，长度1-100")
+        return v
 
     class Config:
         schema_extra = {
@@ -114,7 +144,11 @@ class ToolStatisticsResponse(BaseModel):
 # ==================== API端点 ====================
 
 @universal_router.post("/chat", response_model=UniversalChatResponse)
-async def universal_chat(request: Request, body: UniversalChatRequest) -> UniversalChatResponse:
+async def universal_chat(
+    request: Request,
+    body: UniversalChatRequest,
+    agent_service: AgentService
+) -> UniversalChatResponse:
     """
     全能聊天接口
 
@@ -127,11 +161,8 @@ async def universal_chat(request: Request, body: UniversalChatRequest) -> Univer
     - 多工具自动调用
     """
     try:
-        # 获取助手实例
-        agent = get_universal_agent()
-
-        # 调用助手
-        response = agent.run_with_context(
+        # 调用助手（通过依赖注入获取）
+        response = agent_service.run_with_context(
             input_text=body.text,
             user_id=body.user_id,
             agent_id=body.agent_id,
@@ -156,32 +187,28 @@ async def universal_chat(request: Request, body: UniversalChatRequest) -> Univer
             timestamp=datetime.now().isoformat()
         )
 
+    except HelloAgentsException as e:
+        logger.error(f"全能聊天业务异常: {e}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"全能聊天失败: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"全能聊天失败: {str(e)}"
-        )
+        raise
 
 
 @universal_router.get("/tools", response_model=ToolStatisticsResponse)
-async def get_tool_statistics():
+async def get_tool_statistics(agent_service: AgentService):
     """获取工具统计信息"""
     try:
-        agent = get_universal_agent()
-        stats = agent.get_tool_statistics()
+        stats = agent_service.get_tool_statistics()
 
         return ToolStatisticsResponse(
             success=True,
             statistics=stats,
             timestamp=datetime.now().isoformat()
         )
-    except Exception as e:
+    except ToolException as e:
         logger.error(f"获取工具统计失败: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取工具统计失败: {str(e)}"
-        )
+        raise
 
 
 
@@ -189,15 +216,14 @@ async def get_tool_statistics():
 
 
 @universal_router.get("/health")
-async def health_check():
+async def health_check(agent_service: AgentService):
     """健康检查"""
     try:
-        agent = get_universal_agent()
-        tools = agent.list_tools()
+        tools = agent_service.list_tools()
 
         return {
             "status": "healthy",
-            "agent": agent.name,
+            "agent": agent_service.name,
             "total_tools": len(tools),
             "core_tools": ["rag", "memory", "terminal", "search", "calculator", "note"],
             "available_tools": tools[:10],  # 只显示前10个
@@ -211,11 +237,10 @@ async def health_check():
 
 
 @universal_router.get("/tools/list")
-async def list_tools():
+async def list_tools(agent_service: AgentService):
     """列出所有可用工具"""
     try:
-        agent = get_universal_agent()
-        tools = agent.list_tools()
+        tools = agent_service.list_tools()
 
         return {
             "success": True,
@@ -223,9 +248,6 @@ async def list_tools():
             "tools": tools,
             "timestamp": datetime.now().isoformat()
         }
-    except Exception as e:
+    except ToolException as e:
         logger.error(f"列出工具失败: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"列出工具失败: {str(e)}"
-        )
+        raise

@@ -29,7 +29,8 @@ async def new_update_file(
     🔥 最终企业版：
     异步多文件上传 + 并发保存 + 多线程并行存入向量库 + 结构化返回
     """
-    rag_tool: RAGTool = global_registry.get_tool("rag")
+    # rag_tool: RAGTool = global_registry.get_tool("rag")
+    # rag_tool._clear_knowledge_base(confirm=True)  # 🔥 开发阶段先清库，正式环境请去掉
     memory_tool: MemoryTool = global_registry.get_tool("memory")
 
     # ======================
@@ -97,11 +98,11 @@ async def new_update_file(
     rag_tasks = [
         {
             "tool_name": "rag",
-            "input_data": json.dumps({
+            "input_data": {
                 "action": "add_document",
                 "file_path": fp,
                 "namespace": namespace
-            })
+            }
         }
         for fp in file_paths
     ]
