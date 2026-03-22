@@ -224,8 +224,16 @@ const handleFileSelect = async (e: Event) => {
     }
 
     // 根据后端返回的成功/失败信息提示用户
+    console.log("上传结果：", result);
     if (result.success) {
-      alert(result.data);
+      if (result.data && Array.isArray(result.data)) {
+        // 成功上传的文件列表
+        const uploadedFiles = result.data.map((item: any) => item.file_name).join(', ');
+        alert(`上传成功！文件：${uploadedFiles}`);
+
+      }else{
+        alert(result.msg);
+      }
     } else {
       // 部分文件失败
       let errorMsg = result.data;

@@ -27,6 +27,7 @@ from ..base import Tool, ToolParameter, tool_action
 from ...memory.rag.pipeline import create_rag_pipeline, create_rag_pipeline_with_load_balancing, rerank_with_cross_encoder
 from ...memory.storage.load_balancer import LoadBalanceStrategy
 from ...core.llm import HelloAgentsLLM
+import numpy as np
 
 class RAGTool(Tool):
     """RAG工具
@@ -45,7 +46,7 @@ class RAGTool(Tool):
         qdrant_urls: Optional[List[str]] = None,
         qdrant_api_key: Optional[str] = None,
         qdrant_api_keys: Optional[List[str]] = None,
-        collection_name: str = "rag_knowledge_base",
+        collection_name: str = "hello_agents_rag_vectors",
         rag_namespace: str = "default",
         expandable: bool = False,
         load_balance_strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
@@ -475,7 +476,7 @@ class RAGTool(Tool):
                     limit=parameters.get("limit", 5),
                     enable_advanced_search=parameters.get("enable_advanced_search", True),
                     include_citations=parameters.get("include_citations", True),
-                    max_chars=parameters.get("max_chars", 1200),
+                    max_chars=parameters.get("max_chars", 12000),
                     namespace=parameters.get("namespace", "default")
                 )
             elif action == "search":
@@ -858,7 +859,9 @@ class RAGTool(Tool):
             
         except Exception as e:
             return f"❌ 搜索失败: {str(e)}"
-    
+
+
+    # ===================== 【优化后】核心 _ask 方法（完整流程） =====================
     @tool_action("rag_ask", "基于知识库进行智能问答")
     def _ask(
         self,
@@ -866,193 +869,217 @@ class RAGTool(Tool):
         limit: int = 5,
         enable_advanced_search: bool = True,
         include_citations: bool = True,
-        max_chars: int = 1200,
+        max_chars: int = 3000,
         namespace: str = "default",
-        enable_rerank: bool = False,
-        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        enable_rerank: bool = True,
+        reranker_model: str = "BAAI/bge-small-reranker-v2.0",
         enable_hybrid_search: bool = False,
         vector_weight: float = 0.7,
-        keyword_weight: float = 0.3
+        keyword_weight: float = 0.3,
+        min_relevance_score: float = 0.1,
+        llm_timeout: int = 30,
     ) -> str:
-        """智能问答：检索 → 上下文注入 → LLM生成答案
-
-        Args:
-            question: 用户问题
-            limit: 检索结果数量
-            enable_advanced_search: 是否启用高级搜索
-            include_citations: 是否包含引用来源
-            max_chars: 每个结果最大字符数
-            namespace: 知识库命名空间
-            enable_rerank: 是否启用结果重排序
-            reranker_model: 重排序模型名称
-            enable_hybrid_search: 是否启用混合搜索（向量+关键词）
-            vector_weight: 向量搜索权重（0.0-1.0）
-            keyword_weight: 关键词搜索权重（0.0-1.0）
-
-        Returns:
-            智能问答结果
-
-        核心流程:
-        1. 解析用户问题
-        2. 智能检索相关内容
-        3. 构建上下文和提示词
-        4. LLM生成准确答案
-        5. 添加引用来源
-        """
+        """智能问答完整流程：校验 → 缓存 → 检索 → 重排 → 上下文 → LLM → 格式化 → 缓存写入"""
         try:
-            # 验证问题
+            # ============== 1. 前置校验 ==============
             if not question or not question.strip():
                 return "❌ 请提供要询问的问题"
-
             user_question = question.strip()
-            print(f"🔍 智能问答: {user_question}")
 
-            # 生成缓存键
+            # ============== 2. 生成缓存 key ==============
             cache_key = self._get_cache_key(
                 "ask",
                 question=user_question,
                 limit=limit,
-                enable_advanced_search=enable_advanced_search,
-                include_citations=include_citations,
-                max_chars=max_chars,
+                adv_search=enable_advanced_search,
+                rerank=enable_rerank,
+                hybrid=enable_hybrid_search,
                 namespace=namespace,
+            )
+
+            # ============== 3. 读取缓存（快速返回）==============
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result:
+                print(f"✅ 问答缓存命中: {user_question[:30]}...")
+                return cached_result
+
+            # ============== 4. 执行检索（原始结果）==============
+            raw_results = self._get_raw_search_results(
+                query=user_question,
+                namespace=namespace,
+                limit=limit,
+                min_score=min_relevance_score,
+                enable_advanced_search=enable_advanced_search,
                 enable_rerank=enable_rerank,
                 reranker_model=reranker_model,
                 enable_hybrid_search=enable_hybrid_search,
                 vector_weight=vector_weight,
-                keyword_weight=keyword_weight
+                keyword_weight=keyword_weight,
             )
 
-            # 检查缓存
-            cached_result = self._get_cached_result(cache_key)
-            if cached_result is not None:
-                print(f"💡 缓存命中: {user_question}")
-                return cached_result
+            # ============== 5. 无结果处理 ==============
+            if not raw_results:
+                empty_answer = self._build_no_result_answer(user_question)
+                self._set_cached_result(cache_key, empty_answer)
+                return empty_answer
 
-            print(f"💡 缓存未命中，执行问答: {user_question}")
+            # ============== 6. 构建高质量上下文 ==============
+            context, citations = self._build_qualified_context(
+                raw_results=raw_results,
+                max_chars=max_chars,
+                include_citations=include_citations
+            )
 
-            # 1. 检索相关内容
-            pipeline = self._get_pipeline(namespace)
-            search_start = time.time()
+            # ============== 7. 构建提示词 ==============
+            prompt = self._build_rag_prompt(user_question, context)
 
-            if enable_hybrid_search:
-                # 混合搜索
-                results = pipeline["search_hybrid"](
-                    query=user_question,
-                    top_k=limit,
-                    vector_weight=vector_weight,
-                    keyword_weight=keyword_weight,
-                    enable_advanced_search=enable_advanced_search
-                )
-            elif enable_advanced_search:
-                results = pipeline["search_advanced"](
-                    query=user_question,
-                    top_k=limit,
-                    enable_mqe=True,
-                    enable_hyde=True
-                )
-            else:
-                results = pipeline["search"](
-                    query=user_question,
-                    top_k=limit
-                )
-            
-            search_time = int((time.time() - search_start) * 1000)
-            print(f"🔍 检索完成，找到 {len(results)} 条相关内容，耗时 {search_time}ms, 内容: {results}")
-            if not results:
-                result = (
-                    f"🤔 抱歉，我在知识库中没有找到与「{user_question}」相关的信息。\n\n"
-                    f"💡 建议：\n"
-                    f"• 尝试使用更简洁的关键词\n"
-                    f"• 检查是否已添加相关文档\n"
-                    f"• 使用 stats 操作查看知识库状态"
-                )
-                # 缓存空结果
-                self._set_cached_result(cache_key, result)
-                return result
-
-            # 应用结果重排序
-            if enable_rerank and results:
-                # 准备重排序数据
-                rerank_items = []
-                for res in results:
-                    item = res.copy()
-                    # 确保有content字段
-                    if "content" not in item:
-                        item["content"] = item.get("metadata", {}).get("content", "")
-                    rerank_items.append(item)
-                # 应用重排序
-                results = rerank_with_cross_encoder(
-                    query=user_question,
-                    items=rerank_items,
-                    model_name=reranker_model,
-                    top_k=limit
-                )
-
-            # 2. 智能整理上下文
-            context_parts = []
-            citations = []
-            total_score = 0
-            
-            for i, result in enumerate(results):
-                meta = result.get("metadata", {})
-                content = meta.get("content", "").strip()
-                source = meta.get("source_path", "unknown")
-                score = result.get("score", 0.0)
-                total_score += score
-                
-                if content:
-                    # 清理内容格式
-                    cleaned_content = self._clean_content_for_context(content)
-                    context_parts.append(f"片段 {i+1}：{cleaned_content}")
-                    
-                    if include_citations:
-                        citations.append({
-                            "index": i+1,
-                            "source": os.path.basename(source),
-                            "score": score
-                        })
-            
-            # 3. 构建上下文（智能截断）
-            context = "\n\n".join(context_parts)
-            # if len(context) > max_chars:
-            #     # 智能截断，保持完整性
-            #     context = self._smart_truncate_context(context, max_chars)
-            
-            # 4. 构建增强提示词
-            system_prompt = self._build_system_prompt()
-            user_prompt = self._build_user_prompt(user_question, context)
-            
-            enhanced_prompt = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            
-            # 5. 调用 LLM 生成答案
+            # ============== 8. LLM 生成（带超时）==============
             llm_start = time.time()
-            print(f"💡 调用LLM生成答案，提示词长度:{enhanced_prompt}")
-            answer = self.llm.invoke(enhanced_prompt)
+            try:
+                answer = self.llm.invoke(prompt, timeout=llm_timeout)
+            except Exception as e:
+                return f"❌ LLM 生成失败（超时/异常）: {str(e)}"
             llm_time = int((time.time() - llm_start) * 1000)
-            
+
             if not answer or not answer.strip():
-                return "❌ LLM未能生成有效答案，请稍后重试"
-            
-            # 6. 构建最终回答
-            final_answer = self._format_final_answer(
-                question=user_question,
+                return "❌ AI 未能生成有效答案，请更换问题或检查知识库"
+
+            # ============== 9. 格式化最终答案 ==============
+            avg_score = np.mean([r.get("score", 0) for r in raw_results])
+            final_answer = self._format_answer(
                 answer=answer.strip(),
-                citations=citations if include_citations else None,
-                search_time=search_time,
-                llm_time=llm_time,
-                avg_score=total_score / len(results) if results else 0
+                citations=citations,
+                llm_cost=llm_time,
+                avg_score=avg_score
             )
-            
-            # 缓存问答结果
+
+            # ============== 10. 写入缓存 ==============
             self._set_cached_result(cache_key, final_answer)
             return final_answer
-            
+
         except Exception as e:
-            return f"❌ 智能问答失败: {str(e)}\n💡 请检查知识库状态或稍后重试"
+            return f"❌ 智能问答异常: {str(e)}\n请检查知识库或联系管理员"
+
+    # ===================== 【必须配套】内部工具方法（完整流程依赖） =====================
+    def _get_raw_search_results(
+        self,
+        query: str,
+        namespace: str,
+        limit: int = 5,
+        min_score: float = 0.1,
+        enable_advanced_search: bool = True,
+        enable_rerank: bool = False,
+        reranker_model: str = "",
+        enable_hybrid_search: bool = False,
+        vector_weight: float = 0.7,
+        keyword_weight: float = 0.3,
+    ) -> List[Dict]:
+        """内部方法：获取原始检索结果（不格式化，专供 ask 使用）"""
+        try:
+            pipeline = self._get_pipeline(namespace)
+
+            # 执行搜索
+            if enable_hybrid_search:
+                res = pipeline["search_hybrid"](
+                    query=query,
+                    top_k=limit,
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight
+                )
+            elif enable_advanced_search:
+                res = pipeline["search_advanced"](query=query, top_k=limit)
+            else:
+                res = pipeline["search"](query=query, top_k=limit)
+
+            # 低相关性过滤
+            res = [r for r in res if r.get("score", 0) >= min_score]
+
+            # 重排序
+            if enable_rerank and res:
+                from ...memory.rag.pipeline import rerank_with_cross_encoder
+                items = []
+                for r in res:
+                    content = r.get("metadata", {}).get("content", "")
+                    items.append({"content": content})
+                res = rerank_with_cross_encoder(query, items, model_name=reranker_model, top_k=limit)
+            return res
+        except Exception:
+            return []
+
+    def _build_qualified_context(self, raw_results: List[Dict], max_chars: int = 3000, include_citations: bool = True):
+        """构建：去重 + 清洗 + 长度控制 + 引用列表"""
+        context_parts = []
+        citations = []
+        seen_content = set()
+
+        for idx, res in enumerate(raw_results):
+            meta = res.get("metadata", {})
+            content = meta.get("content", "").strip()
+            if not content or content in seen_content:
+                continue
+            seen_content.add(content)
+
+            # 文本清洗
+            content = " ".join(content.split())
+            context_parts.append(f"【参考片段{idx+1}】{content}")
+
+            # 引用来源
+            if include_citations:
+                citations.append({
+                    "idx": idx + 1,
+                    "source": os.path.basename(meta.get("source_path", "未知文档")),
+                    "score": round(res.get("score", 0), 3)
+                })
+
+        # 智能截断
+        context = "\n".join(context_parts)
+        if len(context) > max_chars:
+            context = context[:max_chars] + "...\n⚠️ 上下文已自动裁剪"
+        return context, citations
+
+    def _build_rag_prompt(self, question: str, context: str) -> List[Dict[str, str]]:
+        """标准 RAG 提示词（严格依据上下文、不编造）"""
+        return [
+            {
+                "role": "system",
+                "content": "你是专业知识助手，严格依据提供的参考材料回答，不编造、不扩展、不联想。语言简洁、准确、结构化。无法回答时请明确说明。"
+            },
+            {
+                "role": "user",
+                "content": f"问题：{question}\n\n参考材料：\n{context}\n\n请直接给出答案。"
+            }
+        ]
+
+    def _build_no_result_answer(self, question: str) -> str:
+        """无结果友好答案"""
+        return (
+            f"🤖 **智能问答结果**\n\n"
+            f"❌ 未在知识库中找到与「{question}」相关的内容。\n\n"
+            f"💡 建议：\n"
+            f"• 更换关键词重试\n"
+            f"• 确认已上传对应文档\n"
+            f"• 检查命名空间是否正确"
+        )
+
+    def _format_answer(self, answer: str, citations: List[Dict], llm_cost: int, avg_score: float) -> str:
+        """最终答案格式化（带引用、耗时、评分）"""
+        lines = [f"🤖 **智能问答结果**\n", answer]
+
+        # 参考来源
+        if citations:
+            lines.append("\n📚 **参考来源**")
+            for cit in citations:
+                if cit["score"] >= 0.7:
+                    emoji = "🟢"
+                elif cit["score"] >= 0.5:
+                    emoji = "🟡"
+                else:
+                    emoji = "🔵"
+                lines.append(f"{emoji} [{cit['idx']}] {cit['source']} (相似度: {cit['score']:.3f})")
+
+        # 性能信息
+        lines.append(f"\n⚡ 生成: {llm_cost}ms | 平均相似度: {avg_score:.3f}")
+        return "\n".join(lines)
     
     def _clean_content_for_context(self, content: str) -> str:
         """清理内容用于上下文"""
