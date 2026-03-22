@@ -41,6 +41,16 @@
           </div>
         </div>
 
+        <!-- 上传模式选择 -->
+        <div class="flex items-center gap-4 mb-4">
+          <label class="text-sm font-medium text-gray-700">上传模式：</label>
+          <select v-model="uploadMode" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="single">单文件</option>
+            <option value="multiple">多文件</option>
+            <option value="directory">文件夹</option>
+          </select>
+        </div>
+
         <!-- 上传文件区域：加载状态 + 上传按钮 -->
         <div class="flex justify-end pt-2">
           <button
@@ -57,7 +67,7 @@
             @click="triggerFileInput"
           >
             <i class="fa fa-plus"></i>
-            <span>上传文件/文件夹</span>
+            <span>{{ uploadButtonText }}</span>
           </button>
 
           <!-- 隐藏的文件选择器，支持多文件和文件夹选择 -->
@@ -66,9 +76,9 @@
             type="file"
             class="hidden"
             accept=".txt,.md,.pdf,.docx,.doc,.json"
-            multiple
-            webkitdirectory
-            directory
+            :multiple="uploadMode === 'multiple' || uploadMode === 'directory'"
+            :webkitdirectory="uploadMode === 'directory'"
+            :directory="uploadMode === 'directory'"
             @change="handleFileSelect"
           />
         </div>
@@ -78,7 +88,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { ref, reactive, watch, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 const appStore = useAppStore();
@@ -107,8 +117,22 @@ const emit = defineEmits(['update:modelValue']);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const loading = ref(false); // 列表加载状态
 const uploading = ref(false); // 上传加载状态
+const uploadMode = ref('multiple'); // 'single', 'multiple', 'directory'
 let knowledgeBaseList = reactive<KnowledgeBaseItem[]>([]); // 知识库文件列表
 let kg_knowledgeBaseList = reactive<KnowledgeBaseItem[]>([]);
+// 上传按钮文本计算属性
+const uploadButtonText = computed(() => {
+  switch (uploadMode.value) {
+    case 'single':
+      return '上传文件';
+    case 'multiple':
+      return '上传多个文件';
+    case 'directory':
+      return '上传文件夹';
+    default:
+      return '上传文件/文件夹';
+  }
+});
 // 监听弹窗显隐：打开时加载文件列表
 watch(
   () => props.modelValue,
@@ -174,19 +198,22 @@ const handleFileSelect = async (e: Event) => {
   try {
     console.log(`选择 ${files.length} 个文件`);
 
-    // 构建 FormData，支持多文件上传
+    // 根据上传模式选择端点和构建 FormData
+    const url = `${apiUrl.value}new_update_file/new_update_file`;
+
     const formData = new FormData();
-    // 为每个文件添加 file 字段（同名），后端接收 List[UploadFile]
+
     Array.from(files).forEach(file => {
-      formData.append('files', file);
-    });
+        formData.append('files', file);
+      });
+
     // 其他参数
     formData.append('namespace', 'uid_12345');
     formData.append('agent_id', 'uid_12345');
     formData.append('session_id', `session_${Date.now()}`);
 
     // 发送上传请求
-    const response = await fetch(`${apiUrl.value}new_update_file/new_update_file`, {
+    const response = await fetch(url, {
       method: 'POST',
       body: formData,
     });

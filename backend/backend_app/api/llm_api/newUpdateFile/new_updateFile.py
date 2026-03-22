@@ -19,15 +19,9 @@ new_updateFile_router = APIRouter()
 MAX_PARALLEL_FILES = 4
 
 
-@new_updateFile_router.post("/new_update_file")
-async def new_update_file(
-    request: Request,
-    files: List[UploadFile] = File(..., description="上传文件列表"),
-    namespace: str = Form(..., description="命名空间")
-) -> dict:
+async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dict:
     """
-    🔥 最终企业版：
-    异步多文件上传 + 并发保存 + 多线程并行存入向量库 + 结构化返回
+    处理上传的文件列表：保存、向量化、记录记忆
     """
     # rag_tool: RAGTool = global_registry.get_tool("rag")
     # rag_tool._clear_knowledge_base(confirm=True)  # 🔥 开发阶段先清库，正式环境请去掉
@@ -165,3 +159,16 @@ async def new_update_file(
         "results": success_list,
         "errors": fail_list
     }
+
+
+@new_updateFile_router.post("/new_update_file")
+async def new_update_file(
+    request: Request,
+    files: List[UploadFile] = File(..., description="上传文件列表"),
+    namespace: str = Form(..., description="命名空间")
+) -> dict:
+    """
+    🔥 最终企业版：
+    异步多文件上传 + 并发保存 + 多线程并行存入向量库 + 结构化返回
+    """
+    return await process_uploaded_files(files, namespace)
