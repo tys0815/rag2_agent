@@ -24,7 +24,7 @@ import os
 import time
 
 from ..base import Tool, ToolParameter, tool_action
-from ...memory.rag.pipeline import create_rag_pipeline, create_rag_pipeline_with_load_balancing, rerank_with_cross_encoder
+from ...memory.rag.pipeline import create_rag_pipeline, rerank_with_cross_encoder
 from ...memory.storage.load_balancer import LoadBalanceStrategy
 from ...core.llm import HelloAgentsLLM
 import numpy as np
@@ -58,7 +58,8 @@ class RAGTool(Tool):
     ):
         super().__init__(
             name="rag",
-            description="RAG工具 - 支持多格式文档检索增强生成，提供智能问答能力",
+            description="""RAG工具 - 企业内部知识库智能检索工具，用于查询公司制度、考勤、休假、报销、人事政策、开发文档、测试文档、内部流程等非公开信息。
+用户询问公司规则、请假流程、报销材料、考勤规定、内部文档时必须使用此工具。""",
             expandable=expandable
         )
 
@@ -372,27 +373,15 @@ class RAGTool(Tool):
     def _init_components(self):
         """初始化RAG组件"""
         try:
-            # 根据URL数量决定使用单实例还是负载均衡
-            if len(self.qdrant_urls) == 1:
-                # 单实例模式
-                default_pipeline = create_rag_pipeline(
-                    qdrant_url=self.qdrant_urls[0],
-                    qdrant_api_key=self.qdrant_api_keys[0],
-                    collection_name=self.collection_name,
-                    rag_namespace=self.rag_namespace
-                )
-                print(f"✅ RAG工具初始化成功（单实例模式）: namespace={self.rag_namespace}, collection={self.collection_name}")
-            else:
-                # 负载均衡模式
-                default_pipeline = create_rag_pipeline_with_load_balancing(
-                    qdrant_urls=self.qdrant_urls,
-                    qdrant_api_keys=self.qdrant_api_keys,
-                    collection_name=self.collection_name,
-                    rag_namespace=self.rag_namespace,
-                    strategy=self.load_balance_strategy,
-                    **self.load_balancer_kwargs
-                )
-                print(f"✅ RAG工具初始化成功（负载均衡模式）: namespace={self.rag_namespace}, collection={self.collection_name}, 后端数量={len(self.qdrant_urls)}")
+
+            # 单实例模式
+            default_pipeline = create_rag_pipeline(
+                qdrant_url=self.qdrant_urls[0],
+                qdrant_api_key=self.qdrant_api_keys[0],
+                collection_name=self.collection_name,
+                rag_namespace=self.rag_namespace
+            )
+            print(f"✅ RAG工具初始化成功（单实例模式）: namespace={self.rag_namespace}, collection={self.collection_name}")
 
             self._pipelines[self.rag_namespace] = default_pipeline
 
@@ -412,25 +401,15 @@ class RAGTool(Tool):
         if target_ns in self._pipelines:
             return self._pipelines[target_ns]
 
-        # 根据URL数量决定使用单实例还是负载均衡
-        if len(self.qdrant_urls) == 1:
-            # 单实例模式
-            pipeline = create_rag_pipeline(
-                qdrant_url=self.qdrant_urls[0],
-                qdrant_api_key=self.qdrant_api_keys[0],
-                collection_name=self.collection_name,
-                rag_namespace=target_ns
-            )
-        else:
-            # 负载均衡模式
-            pipeline = create_rag_pipeline_with_load_balancing(
-                qdrant_urls=self.qdrant_urls,
-                qdrant_api_keys=self.qdrant_api_keys,
-                collection_name=self.collection_name,
-                rag_namespace=target_ns,
-                strategy=self.load_balance_strategy,
-                **self.load_balancer_kwargs
-            )
+        
+        # 单实例模式
+        pipeline = create_rag_pipeline(
+            qdrant_url=self.qdrant_urls[0],
+            qdrant_api_key=self.qdrant_api_keys[0],
+            collection_name=self.collection_name,
+            rag_namespace=target_ns
+        )
+       
 
         self._pipelines[target_ns] = pipeline
         return pipeline
@@ -477,7 +456,7 @@ class RAGTool(Tool):
                     enable_advanced_search=parameters.get("enable_advanced_search", True),
                     include_citations=parameters.get("include_citations", True),
                     max_chars=parameters.get("max_chars", 12000),
-                    namespace=parameters.get("namespace", "default")
+                    namespace=parameters.get("user_id", "default")
                 )
             elif action == "search":
                 return self._search(
@@ -565,7 +544,7 @@ class RAGTool(Tool):
     @tool_action("rag_add_document", "添加文档到知识库（支持PDF、Word、Excel、PPT、图片、音频等多种格式）")
     def _add_document(
         self,
-        file_path: str,
+        file_path: list[str],
         document_id: str = None,
         namespace: str = "default",
         chunk_size: int = 800,
@@ -584,14 +563,12 @@ class RAGTool(Tool):
             执行结果
         """
         try:
-            if not file_path or not os.path.exists(file_path):
-                return f"❌ 文件不存在: {file_path}"
             
             pipeline = self._get_pipeline(namespace)
             t0 = time.time()
 
             chunks_added = pipeline["add_documents"](
-                file_paths=[file_path],
+                file_paths=file_path,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap
             )
@@ -603,13 +580,13 @@ class RAGTool(Tool):
                 return f"⚠️ 未能从文件解析内容: {os.path.basename(file_path)}"
             
             # 添加文档后清理该命名空间的缓存
-            self._clear_namespace_cache(pipeline.get('namespace', self.rag_namespace))
+            self._clear_namespace_cache(namespace)
 
             return (
-                f"✅ 文档已添加到知识库: {os.path.basename(file_path)}\n"
+                f"✅ 文档已添加到知识库: {', '.join(os.path.basename(p) for p in file_path)}\n"
                 f"📊 分块数量: {chunks_added}\n"
                 f"⏱️ 处理时间: {process_ms}ms\n"
-                f"📝 命名空间: {pipeline.get('namespace', self.rag_namespace)}"
+                f"📝 命名空间: {namespace}"
                 f"\n🧹 已清理相关缓存"
             )
             

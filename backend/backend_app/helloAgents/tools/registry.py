@@ -131,7 +131,7 @@ class ToolRegistry:
 
         # 函数工具描述
         for name, info in self._functions.items():
-            descriptions.append(f"- {name}: {info['description']}")
+            descriptions.append(f"{name}:{info['description']}")
 
         return "\n".join(descriptions) if descriptions else "暂无可用工具"
 

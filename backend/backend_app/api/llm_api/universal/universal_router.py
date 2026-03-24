@@ -4,12 +4,12 @@
 
 import re
 from datetime import datetime
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any, Annotated
+from typing import Optional, Dict, Any
 import logging
 
-from helloAgents.agents.universal_enterprise_agent import UniversalEnterpriseAgent, create_universal_assistant
+from helloAgents.agents.universal_enterprise_agent import KnowledgeBaseAssistant
 from helloAgents.core.llm import HelloAgentsLLM
 from helloAgents.tools.registry import global_registry
 from helloAgents.core.exceptions import (
@@ -21,44 +21,6 @@ logger = logging.getLogger(__name__)
 
 # 创建路由器
 universal_router = APIRouter()
-
-# 全局Agent实例（单例模式）
-_universal_agent = None
-
-
-def get_universal_agent() -> UniversalEnterpriseAgent:
-    """获取全能企业级助手实例（单例）"""
-    global _universal_agent
-    if _universal_agent is None:
-        _universal_agent = create_universal_assistant(
-            name="universal_enterprise_assistant",
-            llm=HelloAgentsLLM(),
-            system_prompt="""你是一个全能企业级AI助手，
-
-## 输出要求
-1. 提供清晰、准确的回答
-2. 保持专业、友好的语气
-3. 对复杂任务分步骤解释
-
-现在开始为用户提供全面的AI助手服务！""",
-            workspace="./workspace",
-            tool_registry=global_registry
-        )
-        logger.info("✅ 全能企业级助手初始化完成")
-        logger.info(f"📋 可用工具: {_universal_agent.list_tools()}")
-    return _universal_agent
-
-
-# ==================== 依赖注入函数 ====================
-
-def get_agent_service() -> UniversalEnterpriseAgent:
-    """依赖注入：获取Agent服务实例"""
-    return get_universal_agent()
-
-
-# 类型别名，用于依赖注入
-AgentService = Annotated[UniversalEnterpriseAgent, Depends(get_agent_service)]
-
 
 # ==================== 请求/响应模型 ====================
 
@@ -146,8 +108,7 @@ class ToolStatisticsResponse(BaseModel):
 @universal_router.post("/chat", response_model=UniversalChatResponse)
 async def universal_chat(
     request: Request,
-    body: UniversalChatRequest,
-    agent_service: AgentService
+    body: UniversalChatRequest
 ) -> UniversalChatResponse:
     """
     全能聊天接口
@@ -161,16 +122,17 @@ async def universal_chat(
     - 多工具自动调用
     """
     try:
+        agent = KnowledgeBaseAssistant(
+            name="通用助手",
+            llm=HelloAgentsLLM(),
+            tool_registry=global_registry
+        )
         # 调用助手（通过依赖注入获取）
-        response = agent_service.run_with_context(
+        response = agent.run(
             input_text=body.text,
             user_id=body.user_id,
             agent_id=body.agent_id,
-            session_id=body.session_id,
-            namespace=body.namespace,
-            enable_memory=body.enable_memory,
-            enable_rag=body.enable_rag,
-            tool_choice=body.tool_choice
+            session_id=body.session_id
         )
 
         # 使用传入的session_id或生成新的
@@ -192,62 +154,4 @@ async def universal_chat(
         raise
     except Exception as e:
         logger.error(f"全能聊天失败: {e}", exc_info=True)
-        raise
-
-
-@universal_router.get("/tools", response_model=ToolStatisticsResponse)
-async def get_tool_statistics(agent_service: AgentService):
-    """获取工具统计信息"""
-    try:
-        stats = agent_service.get_tool_statistics()
-
-        return ToolStatisticsResponse(
-            success=True,
-            statistics=stats,
-            timestamp=datetime.now().isoformat()
-        )
-    except ToolException as e:
-        logger.error(f"获取工具统计失败: {e}", exc_info=True)
-        raise
-
-
-
-
-
-
-@universal_router.get("/health")
-async def health_check(agent_service: AgentService):
-    """健康检查"""
-    try:
-        tools = agent_service.list_tools()
-
-        return {
-            "status": "healthy",
-            "agent": agent_service.name,
-            "total_tools": len(tools),
-            "core_tools": ["rag", "memory", "terminal", "search", "calculator", "note"],
-            "available_tools": tools[:10],  # 只显示前10个
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"健康检查失败: {str(e)}"
-        )
-
-
-@universal_router.get("/tools/list")
-async def list_tools(agent_service: AgentService):
-    """列出所有可用工具"""
-    try:
-        tools = agent_service.list_tools()
-
-        return {
-            "success": True,
-            "total_tools": len(tools),
-            "tools": tools,
-            "timestamp": datetime.now().isoformat()
-        }
-    except ToolException as e:
-        logger.error(f"列出工具失败: {e}", exc_info=True)
         raise

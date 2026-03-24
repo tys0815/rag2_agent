@@ -1,11 +1,11 @@
 from typing import List, Dict, Optional, Any
 import os
 import hashlib
-import functools
+import sqlite3
+import time
+import json
 from ..embedding import get_text_embedder, get_dimension
 from ..storage.qdrant_store import QdrantVectorStore
-from ..storage.load_balancer import LoadBalancedVectorStore, LoadBalanceStrategy
-import asyncio
 
 
 def _get_markitdown_instance():
@@ -53,9 +53,6 @@ def _convert_to_markdown(path: str) -> str:
     """
     if not os.path.exists(path):
         return ""
-    
-    if not _is_markitdown_supported_format(path):
-        return _fallback_text_reader(path)
     
     # 对PDF文件使用增强处理
     ext = (os.path.splitext(path)[1] or '').lower()
@@ -200,29 +197,10 @@ def _fallback_text_reader(path: str) -> str:
 
 
 def _detect_lang(sample: str) -> str:
-    """
-    稳定、快速、线程安全的语言检测
-    适合 RAG + 并行检索场景
-    """
     try:
-        # 1. 空值保护
-        if not sample or not isinstance(sample, str):
-            return "unknown"
-
-        # 2. 只取前 500 字符（足够判断，提速）
-        clean_sample = sample.strip()[:500]
-        if len(clean_sample) < 2:
-            return "unknown"
-
-        # 3. 延迟加载 + 只 import 一次
         from langdetect import detect
-
-        # 4. 安全检测
-        lang = detect(clean_sample)
-        return lang if lang else "unknown"
-
+        return detect(sample[:1000]) if sample else "unknown"
     except Exception:
-        # 任何错误都返回安全默认值
         return "unknown"
 
 
@@ -508,23 +486,22 @@ def index_chunks(
 ) -> None:
     """
     Index markdown chunks with unified embedding and Qdrant storage.
-    Uses unified embedding API with fallback to sentence-transformers.
-    ✅ 修复：向量格式错乱、零向量、维度不匹配、搜不到结果
+    Uses百炼 API with fallback to sentence-transformers.
     """
     if not chunks:
         print("[RAG] No chunks to index")
         return
     
-    # 统一嵌入 & 维度
+    # Use unified embedding from embedding module
     embedder = get_text_embedder()
     dimension = get_dimension(384)
     
-    # 向量库
+    # Create default Qdrant store if not provided
     if store is None:
         store = _create_default_vector_store(dimension)
         print(f"[RAG] Created default Qdrant store with dimension {dimension}")
     
-    # 预处理文本
+    # Preprocess markdown texts for better embeddings
     processed_texts = []
     for c in chunks:
         raw_content = c["content"]
@@ -533,59 +510,102 @@ def index_chunks(
     
     print(f"[RAG] Embedding start: total_texts={len(processed_texts)} batch_size={batch_size}")
     
-    # ============================
-    # ✅ 【修复核心】干净的向量编码 & 格式标准化
-    # ============================
+    # Batch encoding with unified embedder
     vecs: List[List[float]] = []
     for i in range(0, len(processed_texts), batch_size):
         part = processed_texts[i:i+batch_size]
         try:
+            # Use unified embedder directly (handles caching internally)
             part_vecs = embedder.encode(part)
-
-            # 🔥 统一格式：任何格式 → List[List[float]]
-            # 支持：list[np.ndarray] / np.ndarray / list[list]
-            if not isinstance(part_vecs, list):
-                part_vecs = part_vecs.tolist()
-            else:
-                new_list = []
-                for v in part_vecs:
-                    if hasattr(v, "tolist"):
-                        new_list.append(v.tolist())
-                    else:
-                        new_list.append(list(v))
-                part_vecs = new_list
-
-            # 维度校验 & 修复
-            for v in part_vecs:
-                if len(v) != dimension:
-                    print(f"[WARNING] 向量维度异常：期望={dimension}，实际={len(v)}，已自动修正")
-                    v = v[:dimension] if len(v) > dimension else v + [0.0]*(dimension-len(v))
-                vecs.append(v)
             
-        except Exception as e:
-            print(f"[WARNING] Batch {i//batch_size} 编码失败：{str(e)}，使用小批次重试...")
-            # 小批次重试
-            for j in range(0, len(part), 8):
+            # Normalize to List[List[float]]
+            if not isinstance(part_vecs, list):
+                # 单个numpy数组转为列表中的列表
+                if hasattr(part_vecs, "tolist"):
+                    part_vecs = [part_vecs.tolist()]
+                else:
+                    part_vecs = [list(part_vecs)]
+            else:
+                # 检查是否是嵌套列表
+                if part_vecs and not isinstance(part_vecs[0], (list, tuple)) and hasattr(part_vecs[0], "__len__"):
+                    # numpy数组列表 -> 转换每个数组
+                    normalized_vecs = []
+                    for v in part_vecs:
+                        if hasattr(v, "tolist"):
+                            normalized_vecs.append(v.tolist())
+                        else:
+                            normalized_vecs.append(list(v))
+                    part_vecs = normalized_vecs
+                elif part_vecs and not isinstance(part_vecs[0], (list, tuple)):
+                    # 单个向量被误判为列表，实际应该包装成[[...]]
+                    if hasattr(part_vecs, "tolist"):
+                        part_vecs = [part_vecs.tolist()]
+                    else:
+                        part_vecs = [list(part_vecs)]
+            
+            for v in part_vecs:
                 try:
-                    small_part = part[j:j+8]
+                    # 确保向量是float列表
+                    if hasattr(v, "tolist"):
+                        v = v.tolist()
+                    v_norm = [float(x) for x in v]
+                    if len(v_norm) != dimension:
+                        print(f"[WARNING] 向量维度异常: 期望{dimension}, 实际{len(v_norm)}")
+                        # 用零向量填充或截断
+                        if len(v_norm) < dimension:
+                            v_norm.extend([0.0] * (dimension - len(v_norm)))
+                        else:
+                            v_norm = v_norm[:dimension]
+                    vecs.append(v_norm)
+                except Exception as e:
+                    print(f"[WARNING] 向量转换失败: {e}, 使用零向量")
+                    vecs.append([0.0] * dimension)
+                
+        except Exception as e:
+            print(f"[WARNING] Batch {i} encoding failed: {e}")
+            print(f"[RAG] Retrying batch {i} with smaller chunks...")
+            
+            # 尝试重试：将批次分解为更小的块
+            success = False
+            for j in range(0, len(part), 8):  # 更小的批次
+                small_part = part[j:j+8]
+                try:
+                    import time
+                    time.sleep(2)  # 等待2秒避免频率限制
+                    
                     small_vecs = embedder.encode(small_part)
-                    # 格式统一
-                    if not isinstance(small_vecs, list):
-                        small_vecs = small_vecs.tolist()
-                    vecs.extend(small_vecs)
+                    # Normalize to List[List[float]]
+                    if isinstance(small_vecs, list) and small_vecs and not isinstance(small_vecs[0], list):
+                        small_vecs = [small_vecs]
+                    
+                    for v in small_vecs:
+                        if hasattr(v, "tolist"):
+                            v = v.tolist()
+                        try:
+                            v_norm = [float(x) for x in v]
+                            if len(v_norm) != dimension:
+                                print(f"[WARNING] 向量维度异常: 期望{dimension}, 实际{len(v_norm)}")
+                                if len(v_norm) < dimension:
+                                    v_norm.extend([0.0] * (dimension - len(v_norm)))
+                                else:
+                                    v_norm = v_norm[:dimension]
+                            vecs.append(v_norm)
+                            success = True
+                        except Exception as e2:
+                            print(f"[WARNING] 小批次向量转换失败: {e2}")
+                            vecs.append([0.0] * dimension)
                 except Exception as e2:
-                    print(f"[WARNING] 小批次失败：{e2}，填充零向量")
-                    vecs.extend([[0.0]*dimension for _ in range(len(small_part))])
+                    print(f"[WARNING] 小批次 {j//8} 仍然失败: {e2}")
+                    # 为这个小批次创建零向量
+                    for _ in range(len(small_part)):
+                        vecs.append([0.0] * dimension)
+            
+            if not success:
+                print(f"[ERROR] 批次 {i} 完全失败，使用零向量")
         
         print(f"[RAG] Embedding progress: {min(i+batch_size, len(processed_texts))}/{len(processed_texts)}")
-
-    # ============================
-    # ✅ 安全校验：文本数 == 向量数
-    # ============================
-    if len(vecs) != len(chunks):
-        raise RuntimeError(f"向量数量不匹配！文本={len(chunks)}, 向量={len(vecs)}")
-
-    # 元数据构建
+    
+    # Prepare metadata with RAG tags
     metas: List[Dict] = []
     ids: List[str] = []
     for ch in chunks:
@@ -593,11 +613,12 @@ def index_chunks(
             "memory_id": ch["id"],
             "user_id": "rag_user",
             "memory_type": "rag_chunk",
-            "content": ch["content"],
-            "data_source": "rag_pipeline",
+            "content": ch["content"],  # Keep original markdown content
+            "data_source": "rag_pipeline",  # RAG identification tag
             "rag_namespace": rag_namespace,
-            "is_rag_data": True,
+            "is_rag_data": True,  # Clear RAG data marker
         }
+        # Merge chunk metadata
         meta.update(ch.get("metadata", {}))
         metas.append(meta)
         ids.append(ch["id"])
@@ -605,16 +626,15 @@ def index_chunks(
     print(f"[RAG] Qdrant upsert start: n={len(vecs)}")
     success = store.add_vectors(vectors=vecs, metadata=metas, ids=ids)
     if success:
-        print(f"[RAG] ✅ Qdrant upsert done: {len(vecs)} vectors indexed")
+        print(f"[RAG] Qdrant upsert done: {len(vecs)} vectors indexed")
     else:
-        raise RuntimeError("❌ Failed to index vectors to Qdrant")
+        print(f"[RAG] Qdrant upsert failed")
+        raise RuntimeError("Failed to index vectors to Qdrant")
 
 
-@functools.lru_cache(maxsize=1000)
 def embed_query(query: str) -> List[float]:
     """
     Embed query using unified embedding (百炼 with fallback).
-    Cache with LRU strategy (max 1000 queries).
     """
     embedder = get_text_embedder()
     dimension = get_dimension(384)
@@ -717,6 +737,7 @@ def _prompt_hyde(query: str) -> Optional[str]:
     except Exception:
         return None
 
+
 def search_vectors_expanded(
     store = None,
     query: str = "",
@@ -730,16 +751,18 @@ def search_vectors_expanded(
     candidate_pool_multiplier: int = 4,
 ) -> List[Dict]:
     """
-    线程池并行版本 - 已修复：会完整等待所有结果返回
+    Search with query expansion using unified embedding and Qdrant.
     """
     if not query:
         return []
     
+    # Create default store if not provided
     if store is None:
         store = _create_default_vector_store()
     
-    # 构建扩展查询
+    # expansions
     expansions: List[str] = [query]
+    
     if enable_mqe and mqe_expansions > 0:
         expansions.extend(_prompt_mqe(query, mqe_expansions))
     if enable_hyde:
@@ -747,10 +770,18 @@ def search_vectors_expanded(
         if hyde_text:
             expansions.append(hyde_text)
 
-    # 去重
-    expansions = list(filter(None, list(dict.fromkeys(expansions))))
+    # unique and trim
+    uniq: List[str] = []
+    for e in expansions:
+        if e and e not in uniq:
+            uniq.append(e)
+    expansions = uniq[: max(1, len(uniq))]
 
-    # 构建过滤条件
+    # distribute pool per expansion
+    pool = max(top_k * candidate_pool_multiplier, 20)
+    per = max(1, pool // max(1, len(expansions)))
+
+    # Build filter for RAG data
     where = {"memory_type": "rag_chunk"}
     if only_rag_data:
         where["is_rag_data"] = True
@@ -758,53 +789,17 @@ def search_vectors_expanded(
     if rag_namespace:
         where["rag_namespace"] = rag_namespace
 
-    pool_size = max(top_k * candidate_pool_multiplier, 20)
-    per_query_k = max(1, pool_size // len(expansions))
-
-    # ================================
-    # 🔵 线程池并行搜索 + 强制等待全部完成
-    # ================================
-    from concurrent.futures import ThreadPoolExecutor
-
-    def search_single(q):
-        try:
-            qv = embed_query(q)
-            return store.search_similar(
-                query_vector=qv,
-                limit=per_query_k,
-                score_threshold=score_threshold,
-                where=where
-            )
-        except Exception:
-            return []
-
-    all_results = []
-    # 🔥 关键：submit 后必须等所有 future 完成
-    with ThreadPoolExecutor(max_workers=min(len(expansions), 8)) as executor:
-        futures = [executor.submit(search_single, q) for q in expansions]
-        
-        # 🔥 强制等待所有结果
-        for future in futures:
-            try:
-                res = future.result()  # 会阻塞直到完成
-                if res:
-                    all_results.append(res)
-            except Exception:
-                continue
-
-    # 合并结果（去重 + 保留最高分）
-    agg = {}
-    for hits in all_results:
+    # collect hits across expansions
+    agg: Dict[str, Dict] = {}
+    for q in expansions:
+        qv = embed_query(q)
+        hits = store.search_similar(query_vector=qv, limit=per, score_threshold=score_threshold, where=where)
         for h in hits:
-            meta = h.get("metadata", {})
-            mid = meta.get("memory_id") or meta.get("id") or h.get("id")
-            if not mid:
-                continue
-            score = float(h.get("score", 0.0))
-            if mid not in agg or score > float(agg[mid].get("score", 0.0)):
+            mid = h.get("metadata", {}).get("memory_id", h.get("id"))
+            s = float(h.get("score", 0.0))
+            if mid not in agg or s > float(agg[mid].get("score", 0.0)):
                 agg[mid] = h
-
-    # 排序返回
+    # return top by score
     merged = list(agg.values())
     merged.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
     return merged[:top_k]
@@ -831,136 +826,6 @@ def rerank_with_cross_encoder(query: str, items: List[Dict], model_name: str = "
         return items[:top_k]
     except Exception:
         return items[:top_k]
-
-
-def _text_similarity_score(query: str, text: str) -> float:
-    """
-    Calculate simple text similarity score between query and text.
-    Uses keyword matching and overlap ratio.
-    """
-    if not query or not text:
-        return 0.0
-
-    query_words = set(query.lower().split())
-    text_words = set(text.lower().split())
-
-    if not query_words:
-        return 0.0
-
-    # Calculate Jaccard similarity
-    intersection = query_words.intersection(text_words)
-    union = query_words.union(text_words)
-
-    if not union:
-        return 0.0
-
-    jaccard_sim = len(intersection) / len(union)
-
-    # Calculate overlap coefficient
-    overlap_coef = len(intersection) / len(query_words) if query_words else 0.0
-
-    # Combined score (weighted)
-    return 0.7 * jaccard_sim + 0.3 * overlap_coef
-
-
-def hybrid_search_vectors(
-    store = None,
-    query: str = "",
-    top_k: int = 8,
-    rag_namespace: Optional[str] = None,
-    only_rag_data: bool = True,
-    score_threshold: Optional[float] = None,
-    vector_weight: float = 0.7,
-    keyword_weight: float = 0.3,
-    enable_advanced_search: bool = False
-) -> List[Dict]:
-    """
-    Hybrid search combining vector similarity and keyword matching.
-
-    Args:
-        store: Vector store instance
-        query: Search query
-        top_k: Number of results to return
-        rag_namespace: RAG namespace filter
-        only_rag_data: Filter to only RAG data
-        score_threshold: Minimum score threshold
-        vector_weight: Weight for vector similarity score (0.0-1.0)
-        keyword_weight: Weight for keyword similarity score (0.0-1.0)
-        enable_advanced_search: Enable MQE and HyDE query expansion
-
-    Returns:
-        List of search results with combined scores
-    """
-    if not query:
-        return []
-
-    # Normalize weights
-    total_weight = vector_weight + keyword_weight
-    if total_weight <= 0:
-        vector_weight, keyword_weight = 0.7, 0.3
-        total_weight = 1.0
-    vector_weight /= total_weight
-    keyword_weight /= total_weight
-
-    # Get vector search results
-    if enable_advanced_search:
-        vector_results = search_vectors_expanded(
-            store=store,
-            query=query,
-            top_k=top_k * 2,  # Get more candidates for hybrid ranking
-            rag_namespace=rag_namespace,
-            only_rag_data=only_rag_data,
-            score_threshold=score_threshold,
-            enable_mqe=True,
-            enable_hyde=True
-        )
-    else:
-        vector_results = search_vectors(
-            store=store,
-            query=query,
-            top_k=top_k * 2,  # Get more candidates for hybrid ranking
-            rag_namespace=rag_namespace,
-            only_rag_data=only_rag_data,
-            score_threshold=score_threshold
-        )
-
-    if not vector_results:
-        return []
-
-    # Calculate hybrid scores
-    hybrid_results = []
-    for result in vector_results:
-        # Get text content
-        content = result.get("content", "")
-        if not content:
-            content = result.get("metadata", {}).get("content", "")
-
-        # Get vector score (normalize to 0-1 if needed)
-        vector_score = result.get("score", 0.0)
-        # Qdrant scores are typically 0-1 for cosine similarity
-        if vector_score > 1.0:
-            vector_score = min(vector_score, 1.0)
-
-        # Calculate keyword score
-        keyword_score = _text_similarity_score(query, content)
-
-        # Combine scores
-        combined_score = (vector_score * vector_weight) + (keyword_score * keyword_weight)
-
-        # Create hybrid result
-        hybrid_result = result.copy()
-        hybrid_result["hybrid_score"] = combined_score
-        hybrid_result["vector_score"] = vector_score
-        hybrid_result["keyword_score"] = keyword_score
-        hybrid_result["original_score"] = vector_score  # Keep original for reference
-
-        hybrid_results.append(hybrid_result)
-
-    # Sort by hybrid score
-    hybrid_results.sort(key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
-
-    # Return top_k results
-    return hybrid_results[:top_k]
 
 
 def compute_graph_signals_from_pool(vector_hits: List[Dict], same_doc_weight: float = 1.0, proximity_weight: float = 1.0, proximity_window_chars: int = 1600) -> Dict[str, float]:
@@ -1311,8 +1176,8 @@ def create_rag_pipeline(
         )
     
     def search_advanced(
-        query: str,
-        top_k: int = 8,
+        query: str, 
+        top_k: int = 8, 
         enable_mqe: bool = False,
         enable_hyde: bool = False,
         score_threshold: Optional[float] = None
@@ -1327,181 +1192,16 @@ def create_rag_pipeline(
             enable_hyde=enable_hyde,
             score_threshold=score_threshold
         )
-
-    def search_hybrid(
-        query: str,
-        top_k: int = 8,
-        score_threshold: Optional[float] = None,
-        vector_weight: float = 0.7,
-        keyword_weight: float = 0.3,
-        enable_advanced_search: bool = False
-    ):
-        """Hybrid search combining vector and keyword matching"""
-        return hybrid_search_vectors(
-            store=store,
-            query=query,
-            top_k=top_k,
-            rag_namespace=rag_namespace,
-            score_threshold=score_threshold,
-            vector_weight=vector_weight,
-            keyword_weight=keyword_weight,
-            enable_advanced_search=enable_advanced_search
-        )
-
+    
     def get_stats():
         """Get pipeline statistics"""
         return store.get_collection_stats()
-
+    
     return {
         "store": store,
         "namespace": rag_namespace,
         "add_documents": add_documents,
         "search": search,
         "search_advanced": search_advanced,
-        "search_hybrid": search_hybrid,
-        "get_stats": get_stats
-    }
-
-
-def create_rag_pipeline_with_load_balancing(
-    qdrant_urls: List[str],
-    qdrant_api_keys: Optional[List[str]] = None,
-    collection_name: str = "hello_agents_rag_vectors",
-    rag_namespace: str = "default",
-    strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
-    **load_balancer_kwargs
-) -> Dict[str, Any]:
-    """
-    Create a complete RAG pipeline with load-balanced Qdrant backends.
-
-    Args:
-        qdrant_urls: List of Qdrant URLs for load balancing
-        qdrant_api_keys: List of API keys (optional, same order as urls)
-        collection_name: Collection name
-        rag_namespace: RAG namespace for isolation
-        strategy: Load balancing strategy
-        **load_balancer_kwargs: Additional load balancer parameters
-
-    Returns:
-        Dict containing store, namespace, and helper functions
-    """
-    if not qdrant_urls:
-        raise ValueError("至少需要一个Qdrant URL")
-
-    if qdrant_api_keys is None:
-        qdrant_api_keys = [None] * len(qdrant_urls)
-
-    if len(qdrant_api_keys) != len(qdrant_urls):
-        raise ValueError("URLs和API密钥数量不匹配")
-
-    dimension = get_dimension(384)
-
-    # 创建负载均衡存储
-    store = LoadBalancedVectorStore(
-        backends=[
-            QdrantVectorStore(
-                url=url,
-                api_key=api_key,
-                collection_name=collection_name,
-                vector_size=dimension,
-                distance="cosine"
-            )
-            for url, api_key in zip(qdrant_urls, qdrant_api_keys)
-        ],
-        backend_ids=[f"qdrant_{i}" for i in range(len(qdrant_urls))],
-        strategy=strategy,
-        **load_balancer_kwargs
-    )
-
-    def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100):
-        """Add documents to RAG pipeline"""
-        chunks = load_and_chunk_texts(
-            paths=file_paths,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            namespace=rag_namespace,
-            source_label="rag"
-        )
-        index_chunks(
-            store=store,
-            chunks=chunks,
-            rag_namespace=rag_namespace
-        )
-        return len(chunks)
-
-    def search(query: str, top_k: int = 8, score_threshold: Optional[float] = None):
-        """Search RAG knowledge base"""
-        return search_vectors(
-            store=store,
-            query=query,
-            top_k=top_k,
-            rag_namespace=rag_namespace,
-            score_threshold=score_threshold
-        )
-
-    def search_advanced(
-        query: str,
-        top_k: int = 8,
-        enable_mqe: bool = False,
-        enable_hyde: bool = False,
-        score_threshold: Optional[float] = None
-    ):
-        """Advanced search with query expansion"""
-        return search_vectors_expanded(
-            store=store,
-            query=query,
-            top_k=top_k,
-            rag_namespace=rag_namespace,
-            enable_mqe=enable_mqe,
-            enable_hyde=enable_hyde,
-            score_threshold=score_threshold
-        )
-
-    def search_hybrid(
-        query: str,
-        top_k: int = 8,
-        score_threshold: Optional[float] = None,
-        vector_weight: float = 0.7,
-        keyword_weight: float = 0.3,
-        enable_advanced_search: bool = False
-    ):
-        """Hybrid search combining vector and keyword matching"""
-        return hybrid_search_vectors(
-            store=store,
-            query=query,
-            top_k=top_k,
-            rag_namespace=rag_namespace,
-            score_threshold=score_threshold,
-            vector_weight=vector_weight,
-            keyword_weight=keyword_weight,
-            enable_advanced_search=enable_advanced_search
-        )
-
-    def get_stats():
-        """Get pipeline statistics"""
-        # 获取负载均衡器统计信息
-        lb_stats = store.get_load_balancer_stats()
-
-        # 尝试从第一个健康后端获取集合统计
-        try:
-            # 使用负载均衡器执行操作
-            collection_stats = store.get_collection_stats()
-            return {
-                "load_balancer": lb_stats,
-                "collection": collection_stats
-            }
-        except Exception as e:
-            return {
-                "load_balancer": lb_stats,
-                "collection_error": str(e)
-            }
-
-    return {
-        "store": store,
-        "namespace": rag_namespace,
-        "add_documents": add_documents,
-        "search": search,
-        "search_advanced": search_advanced,
-        "search_hybrid": search_hybrid,
         "get_stats": get_stats
     }

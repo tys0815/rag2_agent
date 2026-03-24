@@ -108,7 +108,7 @@ async def save_file_with_version_and_deduplicate(
 async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dict:
     memory_tool: MemoryTool = global_registry.get_tool("memory")
 
-    # rag_tool: RAGTool = global_registry.get_tool("rag")
+    rag_tool: RAGTool = global_registry.get_tool("rag")
     # rag_tool._clear_knowledge_base(confirm=False, namespace=namespace) 
 
     # ======================
@@ -173,68 +173,56 @@ async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dic
     # 并行入库
     # ======================
     file_paths = [f["file_path"] for f in saved_files]
-    rag_tasks = [
-        {
-            "tool_name": "rag",
-            "input_data": {
-                "action": "add_document",
-                "file_path": fp,
-                "namespace": namespace
-            }
-        }
-        for fp in file_paths
-    ]
-
-    executor = AsyncToolExecutor(global_registry, max_workers=MAX_PARALLEL_FILES)
-    execute_results = await executor.execute_tools_parallel(rag_tasks)
+    result = rag_tool.run({
+        "action": "add_document",
+        "file_path": file_paths,
+        "namespace": namespace
+    })
 
     # ======================
     # 结果处理
     # ======================
-    success_list = []
-    fail_list = []
+    # success_list = []
+    # fail_list = []
 
-    for idx, file_info in enumerate(saved_files):
-        res = execute_results[idx]
-        fn = file_info["filename"]
-        fp = file_info["file_path"]
+    # for idx, file_info in enumerate(saved_files):
+    #     res = execute_results[idx]
+    #     fn = file_info["filename"]
+    #     fp = file_info["file_path"]
 
-        if res["status"] == "success":
-            success_list.append({"filename": fn, "file_path": fp})
-            memory_tool.run({
-                "action": "add",
-                "user_id": namespace,
-                "memory_type": "semantic",
-                "content": f"{now} 用户{namespace}已上传文件：{fn}，已入库知识库",
-                "file_path": fp
-            })
-        else:
-            fail_list.append({"filename": fn, "error": res["result"]})
-            memory_tool.run({
-                "action": "add",
-                "user_id": namespace,
-                "memory_type": "perceptual",
-                "content": f"{now} 用户{namespace}文件 {fn} 处理失败：{res['result']}",
-                "file_path": fp
-            })
+    #     if res["status"] == "success":
+    #         success_list.append({"filename": fn, "file_path": fp})
+    #         memory_tool.run({
+    #             "action": "add",
+    #             "user_id": namespace,
+    #             "memory_type": "semantic",
+    #             "content": f"{now} 用户{namespace}已上传文件：{fn}，已入库知识库",
+    #             "file_path": fp
+    #         })
+    #     else:
+    #         fail_list.append({"filename": fn, "error": res["result"]})
+    #         memory_tool.run({
+    #             "action": "add",
+    #             "user_id": namespace,
+    #             "memory_type": "perceptual",
+    #             "content": f"{now} 用户{namespace}文件 {fn} 处理失败：{res['result']}",
+    #             "file_path": fp
+    #         })
 
     # ======================
     # 最终返回（包含去重信息）
     # ======================
     return {
-        "success": len(fail_list) == 0,
-        "msg": f"成功 {len(success_list)} | 失败 {len(fail_list)} | 去重 {len(duplicate_files)}",
+        "success": True,
+        "msg": f"成功 {len(file_paths)} | 去重 {len(duplicate_files)}",
         "data": {
             "total": len(files),
             "saved": len(saved_files),
-            "success": len(success_list),
-            "failed": len(fail_list),
-            "duplicate": len(duplicate_files),
-            "namespace": namespace
-        },
-        "results": success_list,
-        "errors": fail_list,
-        "duplicates": duplicate_files
+            "success": file_paths,
+            "duplicate_files": duplicate_files,
+            "namespace": namespace,
+            "result": result
+        }
     }
 
 
