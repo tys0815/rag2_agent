@@ -47,7 +47,7 @@ class RAGTool(Tool):
         qdrant_api_key: Optional[str] = None,
         qdrant_api_keys: Optional[List[str]] = None,
         collection_name: str = "hello_agents_rag_vectors",
-        rag_namespace: str = "default",
+        user_id: str = "default",
         expandable: bool = False,
         load_balance_strategy: LoadBalanceStrategy = LoadBalanceStrategy.ROUND_ROBIN,
         cache_size: int = 1000,
@@ -65,7 +65,7 @@ class RAGTool(Tool):
 
         self.knowledge_base_path = knowledge_base_path
         self.collection_name = collection_name
-        self.rag_namespace = rag_namespace
+        self.user_id = user_id
 
         # 负载均衡配置
         self.qdrant_urls = qdrant_urls or []
@@ -354,13 +354,13 @@ class RAGTool(Tool):
         self.cache_hits = 0
         self.cache_misses = 0
 
-    def clear_cache(self, namespace: Optional[str] = None) -> None:
+    def clear_cache(self, user_id: Optional[str] = None) -> None:
         """清理缓存
 
         Args:
-            namespace: 指定命名空间，如果为None则清理所有缓存
+            user_id: 指定用户ID，如果为None则清理所有缓存
         """
-        if namespace is None:
+        if user_id is None:
             # 清理所有缓存
             self.query_cache.clear()
             self.cache_timestamps.clear()
@@ -368,7 +368,7 @@ class RAGTool(Tool):
             print(f"🧹 已清理所有缓存")
         else:
             # 清理指定命名空间的缓存
-            self._clear_namespace_cache(namespace)
+            self._clear_namespace_cache(user_id)
 
     def _init_components(self):
         """初始化RAG组件"""
@@ -379,11 +379,11 @@ class RAGTool(Tool):
                 qdrant_url=self.qdrant_urls[0],
                 qdrant_api_key=self.qdrant_api_keys[0],
                 collection_name=self.collection_name,
-                rag_namespace=self.rag_namespace
+                user_id=self.user_id
             )
-            print(f"✅ RAG工具初始化成功（单实例模式）: namespace={self.rag_namespace}, collection={self.collection_name}")
+            print(f"✅ RAG工具初始化成功（单实例模式）: user_id={self.user_id}, collection={self.collection_name}")
 
-            self._pipelines[self.rag_namespace] = default_pipeline
+            self._pipelines[self.user_id] = default_pipeline
 
             # 初始化 LLM 用于回答生成
             self.llm = HelloAgentsLLM()
@@ -395,9 +395,9 @@ class RAGTool(Tool):
             self.init_error = str(e)
             print(f"❌ RAG工具初始化失败: {e}")
 
-    def _get_pipeline(self, namespace: Optional[str] = None) -> Dict[str, Any]:
+    def _get_pipeline(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """获取指定命名空间的 RAG 管道，若不存在则自动创建"""
-        target_ns = namespace or self.rag_namespace
+        target_ns = user_id or self.user_id
         if target_ns in self._pipelines:
             return self._pipelines[target_ns]
 
@@ -407,7 +407,7 @@ class RAGTool(Tool):
             qdrant_url=self.qdrant_urls[0],
             qdrant_api_key=self.qdrant_api_keys[0],
             collection_name=self.collection_name,
-            rag_namespace=target_ns
+            user_id=target_ns
         )
        
 
@@ -437,7 +437,7 @@ class RAGTool(Tool):
                 return self._add_document(
                     file_path=parameters.get("file_path"),
                     document_id=parameters.get("document_id"),
-                    namespace=parameters.get("namespace", "default"),
+                    namespace=parameters.get("user_id", "default"),
                     chunk_size=parameters.get("chunk_size", 800),
                     chunk_overlap=parameters.get("chunk_overlap", 100)
                 )
@@ -445,7 +445,7 @@ class RAGTool(Tool):
                 return self._add_text(
                     text=parameters.get("text"),
                     document_id=parameters.get("document_id"),
-                    namespace=parameters.get("namespace", "default"),
+                    namespace=parameters.get("user_id", "default"),
                     chunk_size=parameters.get("chunk_size", 800),
                     chunk_overlap=parameters.get("chunk_overlap", 100)
                 )
@@ -466,7 +466,7 @@ class RAGTool(Tool):
                     enable_advanced_search=parameters.get("enable_advanced_search", True),
                     max_chars=parameters.get("max_chars", 1200),
                     include_citations=parameters.get("include_citations", True),
-                    namespace=parameters.get("namespace", "default")
+                    user_id=parameters.get("user_id", "default")
                 )
             elif action == "stats":
                 return self._get_stats(namespace=parameters.get("namespace", "default"))
@@ -487,29 +487,29 @@ class RAGTool(Tool):
             ToolParameter(
                 name="action",
                 type="string",
-                description="操作类型：add_document(添加文档), add_text(添加文本), ask(智能问答), search(搜索), stats(统计), clear(清空)",
+                description="操作类型： search(搜索), stats(统计)",
                 required=True
             ),
             
             # 内容参数
-            ToolParameter(
-                name="file_path",
-                type="string",
-                description="文档文件路径（支持PDF、Word、Excel、PPT、图片、音频等多种格式）",
-                required=False
-            ),
-            ToolParameter(
-                name="text",
-                type="string",
-                description="要添加的文本内容",
-                required=False
-            ),
-            ToolParameter(
-                name="question",
-                type="string", 
-                description="用户问题（用于智能问答）",
-                required=False
-            ),
+            # ToolParameter(
+            #     name="file_path",
+            #     type="string",
+            #     description="文档文件路径（支持PDF、Word、Excel、PPT、图片、音频等多种格式）",
+            #     required=False
+            # ),
+            # ToolParameter(
+            #     name="text",
+            #     type="string",
+            #     description="要添加的文本内容",
+            #     required=False
+            # ),
+            # ToolParameter(
+            #     name="question",
+            #     type="string", 
+            #     description="用户问题（用于智能问答）",
+            #     required=False
+            # ),
             ToolParameter(
                 name="query",
                 type="string",
@@ -518,27 +518,27 @@ class RAGTool(Tool):
             ),
             
             # 可选配置参数
-            ToolParameter(
-                name="namespace",
-                type="string",
-                description="知识库命名空间（用于隔离不同项目，默认：default）",
-                required=False,
-                default="default"
-            ),
-            ToolParameter(
-                name="limit",
-                type="integer",
-                description="返回结果数量（默认：5）",
-                required=False,
-                default=5
-            ),
-            ToolParameter(
-                name="include_citations",
-                type="boolean",
-                description="是否包含引用来源（默认：true）",
-                required=False,
-                default=True
-            )
+            # ToolParameter(
+            #     name="namespace",
+            #     type="string",
+            #     description="知识库命名空间（用于隔离不同项目，默认：default）",
+            #     required=False,
+            #     default="default"
+            # ),
+            # ToolParameter(
+            #     name="limit",
+            #     type="integer",
+            #     description="返回结果数量（默认：5）",
+            #     required=False,
+            #     default=5
+            # ),
+            # ToolParameter(
+            #     name="include_citations",
+            #     type="boolean",
+            #     description="是否包含引用来源（默认：true）",
+            #     required=False,
+            #     default=True
+            # )
         ]
 
     @tool_action("rag_add_document", "添加文档到知识库（支持PDF、Word、Excel、PPT、图片、音频等多种格式）")
@@ -673,10 +673,10 @@ class RAGTool(Tool):
         enable_advanced_search: bool = True,
         max_chars: int = 1200,
         include_citations: bool = True,
-        namespace: str = "default",
+        user_id: str = "default",
         metadata_filters: Optional[List[Dict[str, Any]]] = None,
         enable_rerank: bool = False,
-        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        reranker_model: str = "BAAI/bge-reranker-v2-m3",
         enable_hybrid_search: bool = False,
         vector_weight: float = 0.7,
         keyword_weight: float = 0.3
@@ -690,7 +690,7 @@ class RAGTool(Tool):
             enable_advanced_search: 是否启用高级搜索（MQE、HyDE）
             max_chars: 每个结果最大字符数
             include_citations: 是否包含引用来源
-            namespace: 知识库命名空间
+            user_id: 知识库命名空间
             metadata_filters: 元数据过滤条件列表，支持复杂查询
                 格式示例：
                 [
@@ -711,37 +711,37 @@ class RAGTool(Tool):
             搜索结果
         """
         try:
-            if not query or not query.strip():
-                return "❌ 搜索查询不能为空"
+            # if not query or not query.strip():
+            #     return "❌ 搜索查询不能为空"
 
             # 生成缓存键
-            cache_key = self._get_cache_key(
-                "search",
-                query=query,
-                limit=limit,
-                min_score=min_score,
-                enable_advanced_search=enable_advanced_search,
-                max_chars=max_chars,
-                include_citations=include_citations,
-                namespace=namespace,
-                metadata_filters=metadata_filters,
-                enable_rerank=enable_rerank,
-                reranker_model=reranker_model,
-                enable_hybrid_search=enable_hybrid_search,
-                vector_weight=vector_weight,
-                keyword_weight=keyword_weight
-            )
+            # cache_key = self._get_cache_key(
+            #     "search",
+            #     query=query,
+            #     limit=limit,
+            #     min_score=min_score,
+            #     enable_advanced_search=enable_advanced_search,
+            #     max_chars=max_chars,
+            #     include_citations=include_citations,
+            #     user_id=user_id,
+            #     metadata_filters=metadata_filters,
+            #     enable_rerank=enable_rerank,
+            #     reranker_model=reranker_model,
+            #     enable_hybrid_search=enable_hybrid_search,
+            #     vector_weight=vector_weight,
+            #     keyword_weight=keyword_weight
+            # )
 
-            # 检查缓存
-            cached_result = self._get_cached_result(cache_key)
-            if cached_result is not None:
-                print(f"🔍 缓存命中: {query}")
-                return cached_result
+            # # 检查缓存
+            # cached_result = self._get_cached_result(cache_key)
+            # if cached_result is not None:
+            #     print(f"🔍 缓存命中: {query}")
+            #     return cached_result
 
-            print(f"🔍 缓存未命中，执行搜索: {query}")
+            # print(f"🔍 缓存未命中，执行搜索: {query}")
 
             # 使用统一 RAG 管道搜索
-            pipeline = self._get_pipeline(namespace)
+            pipeline = self._get_pipeline(user_id)
 
             if enable_hybrid_search:
                 # 混合搜索
@@ -771,7 +771,7 @@ class RAGTool(Tool):
             if not results:
                 # 缓存空结果
                 result = f"🔍 未找到与 '{query}' 相关的内容"
-                self._set_cached_result(cache_key, result)
+                # self._set_cached_result(cache_key, result)
                 return result
 
             # 应用结果重排序
@@ -831,7 +831,7 @@ class RAGTool(Tool):
             
             result = "\n".join(search_result)
             # 缓存搜索结果
-            self._set_cached_result(cache_key, result)
+            # self._set_cached_result(cache_key, result)
             return result
             
         except Exception as e:

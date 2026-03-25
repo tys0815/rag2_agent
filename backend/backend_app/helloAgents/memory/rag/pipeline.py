@@ -482,7 +482,7 @@ def index_chunks(
     chunks: List[Dict] = None, 
     cache_db: Optional[str] = None, 
     batch_size: int = 64,
-    rag_namespace: str = "default"
+    user_id: str = "default"
 ) -> None:
     """
     Index markdown chunks with unified embedding and Qdrant storage.
@@ -611,11 +611,10 @@ def index_chunks(
     for ch in chunks:
         meta = {
             "memory_id": ch["id"],
-            "user_id": "rag_user",
+            "user_id": user_id,
             "memory_type": "rag_chunk",
             "content": ch["content"],  # Keep original markdown content
             "data_source": "rag_pipeline",  # RAG identification tag
-            "rag_namespace": rag_namespace,
             "is_rag_data": True,  # Clear RAG data marker
         }
         # Merge chunk metadata
@@ -742,7 +741,7 @@ def search_vectors_expanded(
     store = None,
     query: str = "",
     top_k: int = 8,
-    rag_namespace: Optional[str] = None,
+    user_id: Optional[str] = None,
     only_rag_data: bool = True,
     score_threshold: Optional[float] = None,
     enable_mqe: bool = False,
@@ -786,8 +785,8 @@ def search_vectors_expanded(
     if only_rag_data:
         where["is_rag_data"] = True
         where["data_source"] = "rag_pipeline"
-    if rag_namespace:
-        where["rag_namespace"] = rag_namespace
+    if user_id:
+        where["user_id"] = user_id
 
     # collect hits across expansions
     agg: Dict[str, Dict] = {}
@@ -1131,7 +1130,7 @@ def create_rag_pipeline(
     qdrant_url: Optional[str] = None,
     qdrant_api_key: Optional[str] = None,
     collection_name: str = "hello_agents_rag_vectors",
-    rag_namespace: str = "default"
+    user_id: str = "default"
 ) -> Dict[str, Any]:
     """
     Create a complete RAG pipeline with Qdrant and unified embedding.
@@ -1155,13 +1154,13 @@ def create_rag_pipeline(
             paths=file_paths,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            namespace=rag_namespace,
+            namespace=user_id,
             source_label="rag"
         )
         index_chunks(
             store=store,
             chunks=chunks,
-            rag_namespace=rag_namespace
+            user_id=user_id
         )
         return len(chunks)
     
@@ -1171,7 +1170,7 @@ def create_rag_pipeline(
             store=store,
             query=query,
             top_k=top_k,
-            rag_namespace=rag_namespace,
+            rag_namespace=user_id,
             score_threshold=score_threshold
         )
     
@@ -1187,7 +1186,7 @@ def create_rag_pipeline(
             store=store,
             query=query,
             top_k=top_k,
-            rag_namespace=rag_namespace,
+            user_id=user_id,
             enable_mqe=enable_mqe,
             enable_hyde=enable_hyde,
             score_threshold=score_threshold
@@ -1199,7 +1198,7 @@ def create_rag_pipeline(
     
     return {
         "store": store,
-        "namespace": rag_namespace,
+        "namespace": user_id,
         "add_documents": add_documents,
         "search": search,
         "search_advanced": search_advanced,
