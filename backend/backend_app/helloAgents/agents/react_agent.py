@@ -333,7 +333,7 @@ class ReActAgent(Agent):
                         typed_args = {
                             "user_id": kwargs.get("user_id"),
                             "action": "search",
-                            "query": "单元测试范围"
+                            "query": "入职流程"
                         }
                         observation = tool_obj.run(typed_args)
                     else:

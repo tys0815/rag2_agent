@@ -16,6 +16,7 @@ from typing import List, Union, Optional
 import threading
 import os
 import numpy as np
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 
 # ==============
@@ -36,7 +37,7 @@ class EmbeddingModel:
 class LocalTransformerEmbedding(EmbeddingModel):
     """本地Transformer嵌入（优先 sentence-transformers，缺失回退 transformers+torch）"""
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
         self.model_name = model_name
         self._backend = None  # "st" 或 "hf"
         self._st_model = None

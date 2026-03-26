@@ -396,10 +396,10 @@ class RAGTool(Tool):
             print(f"❌ RAG工具初始化失败: {e}")
 
     def _get_pipeline(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """获取指定命名空间的 RAG 管道，若不存在则自动创建"""
-        target_ns = user_id or self.user_id
-        if target_ns in self._pipelines:
-            return self._pipelines[target_ns]
+        """获取指定用户的 RAG 管道，若不存在则自动创建"""
+        target_user = user_id or self.user_id
+        if target_user in self._pipelines:
+            return self._pipelines[target_user]
 
         
         # 单实例模式
@@ -407,11 +407,11 @@ class RAGTool(Tool):
             qdrant_url=self.qdrant_urls[0],
             qdrant_api_key=self.qdrant_api_keys[0],
             collection_name=self.collection_name,
-            user_id=target_ns
+            user_id=target_user
         )
        
 
-        self._pipelines[target_ns] = pipeline
+        self._pipelines[target_user] = pipeline
         return pipeline
 
     def run(self, parameters: Dict[str, Any]) -> str:
@@ -437,7 +437,7 @@ class RAGTool(Tool):
                 return self._add_document(
                     file_path=parameters.get("file_path"),
                     document_id=parameters.get("document_id"),
-                    namespace=parameters.get("user_id", "default"),
+                    user_id=parameters.get("user_id", "default"),
                     chunk_size=parameters.get("chunk_size", 800),
                     chunk_overlap=parameters.get("chunk_overlap", 100)
                 )
@@ -546,7 +546,7 @@ class RAGTool(Tool):
         self,
         file_path: list[str],
         document_id: str = None,
-        namespace: str = "default",
+        user_id: str = "default",
         chunk_size: int = 800,
         chunk_overlap: int = 100
     ) -> str:
@@ -564,13 +564,14 @@ class RAGTool(Tool):
         """
         try:
             
-            pipeline = self._get_pipeline(namespace)
+            pipeline = self._get_pipeline(user_id)
             t0 = time.time()
 
             chunks_added = pipeline["add_documents"](
                 file_paths=file_path,
                 chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
+                chunk_overlap=chunk_overlap,
+                user_id=user_id
             )
             
             t1 = time.time()
@@ -580,13 +581,13 @@ class RAGTool(Tool):
                 return f"⚠️ 未能从文件解析内容: {os.path.basename(file_path)}"
             
             # 添加文档后清理该命名空间的缓存
-            self._clear_namespace_cache(namespace)
+            self._clear_namespace_cache(user_id)
 
             return (
                 f"✅ 文档已添加到知识库: {', '.join(os.path.basename(p) for p in file_path)}\n"
                 f"📊 分块数量: {chunks_added}\n"
                 f"⏱️ 处理时间: {process_ms}ms\n"
-                f"📝 命名空间: {namespace}"
+                f"📝 命名空间: {user_id}"
                 f"\n🧹 已清理相关缓存"
             )
             
@@ -759,7 +760,8 @@ class RAGTool(Tool):
                     top_k=limit,
                     enable_mqe=True,
                     enable_hyde=True,
-                    score_threshold=min_score if min_score > 0 else None
+                    score_threshold=min_score if min_score > 0 else None,
+                    user_id=user_id
                 )
             else:
                 results = pipeline["search"](

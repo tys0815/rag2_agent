@@ -30,7 +30,6 @@ class UniversalChatRequest(BaseModel):
     user_id: str = Field(..., description="用户ID（必需）")
     agent_id: Optional[str] = Field("universal_assistant", description="助手ID（默认为universal_assistant）")
     session_id: Optional[str] = Field(None, description="会话ID（可选，不传则自动生成）")
-    namespace: Optional[str] = Field(None, description="知识库命名空间（默认为user_id）")
     enable_memory: Optional[bool] = Field(True, description="是否启用记忆")
     enable_rag: Optional[bool] = Field(True, description="是否启用RAG检索")
     max_context_length: Optional[int] = Field(2000, description="最大上下文长度", ge=100, le=8000)
@@ -43,21 +42,13 @@ class UniversalChatRequest(BaseModel):
             raise ValueError("用户ID只能包含字母、数字、下划线和短横线，长度3-50")
         return v
 
-    @field_validator("namespace")
-    def validate_namespace(cls, v):
-        """验证命名空间格式"""
-        if v and not re.match(r"^[a-zA-Z0-9_-]{1,100}$", v):
-            raise ValueError("命名空间只能包含字母、数字、下划线和短横线，长度1-100")
-        return v
-
     class Config:
         schema_extra = {
             "example": {
                 "text": "请搜索最新的AI发展动态，并总结成报告",
-                "user_id": "user_12345",
+                "user_id": "uid_12345",
                 "agent_id": "universal_assistant",
                 "session_id": "session_abc123",
-                "namespace": "company_knowledge",
                 "enable_memory": True,
                 "enable_rag": True,
                 "max_context_length": 2000,
@@ -73,7 +64,6 @@ class UniversalChatResponse(BaseModel):
     session_id: str = Field(..., description="会话ID")
     user_id: str = Field(..., description="用户ID")
     agent_id: str = Field(..., description="助手ID")
-    namespace: str = Field(..., description="知识库命名空间")
     tool_calls: Optional[int] = Field(None, description="工具调用次数")
     timestamp: str = Field(..., description="响应时间戳")
 
@@ -83,9 +73,8 @@ class UniversalChatResponse(BaseModel):
                 "success": True,
                 "data": "根据最新搜索，AI发展动态如下...",
                 "session_id": "session_abc123",
-                "user_id": "user_12345",
+                "user_id": "uid_12345",
                 "agent_id": "universal_assistant",
-                "namespace": "company_knowledge",
                 "tool_calls": 2,
                 "timestamp": "2024-01-01T12:00:00"
             }
@@ -144,7 +133,6 @@ async def universal_chat(
             session_id=session_id,
             user_id=body.user_id,
             agent_id=body.agent_id,
-            namespace=body.namespace or body.user_id,
             tool_calls=0,  # 暂时不统计，后续可以增强
             timestamp=datetime.now().isoformat()
         )

@@ -29,7 +29,7 @@ def calculate_content_hash(content: bytes) -> str:
 
 async def save_file_with_version_and_deduplicate(
     upload_file: UploadFile,
-    namespace: str,
+    user_id: str,
     save_dir: str = "./knowledge_base"
 ) -> dict:
     """
@@ -46,7 +46,7 @@ async def save_file_with_version_and_deduplicate(
         name, ext = os.path.splitext(original_name)
 
         # 目录
-        ns_path = os.path.join(save_dir, namespace)
+        ns_path = os.path.join(save_dir, user_id)
         os.makedirs(ns_path, exist_ok=True)
 
         # --------------------------
@@ -105,7 +105,7 @@ async def save_file_with_version_and_deduplicate(
 # ------------------------------
 # 主处理逻辑
 # ------------------------------
-async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dict:
+async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
     memory_tool: MemoryTool = global_registry.get_tool("memory")
 
     rag_tool: RAGTool = global_registry.get_tool("rag")
@@ -116,14 +116,14 @@ async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dic
     # ======================
     if not files:
         raise HTTPException(status_code=400, detail="请上传至少一个文件")
-    if not namespace.strip():
+    if not user_id.strip():
         raise HTTPException(status_code=400, detail="命名空间不能为空")
 
     # ======================
     # 并发保存（去重+版本）
     # ======================
     save_tasks = [
-        save_file_with_version_and_deduplicate(f, namespace)
+        save_file_with_version_and_deduplicate(f, user_id)
         for f in files
     ]
     save_results = await asyncio.gather(*save_tasks)
@@ -150,9 +150,9 @@ async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dic
     for err in save_errors:
         memory_tool.run({
             "action": "add",
-            "user_id": namespace,
+            "user_id": user_id,
             "memory_type": "perceptual",
-            "content": f"{now} 用户{namespace}上传文件 {err['filename']} 保存失败：{err['error']}",
+            "content": f"{now} 用户{user_id}上传文件 {err['filename']} 保存失败：{err['error']}",
             "file_path": ""
         })
 
@@ -176,7 +176,7 @@ async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dic
     result = rag_tool.run({
         "action": "add_document",
         "file_path": file_paths,
-        "namespace": namespace
+        "user_id": user_id
     })
 
     # ======================
@@ -220,7 +220,7 @@ async def process_uploaded_files(files: List[UploadFile], namespace: str) -> dic
             "saved": len(saved_files),
             "success": file_paths,
             "duplicate_files": duplicate_files,
-            "namespace": namespace,
+            "namespace": user_id,
             "result": result
         }
     }

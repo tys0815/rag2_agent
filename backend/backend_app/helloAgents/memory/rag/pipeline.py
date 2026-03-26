@@ -322,12 +322,12 @@ def _chunk_paragraphs(paragraphs: List[Dict], chunk_tokens: int, overlap_tokens:
     return chunks
 
 
-def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, namespace: Optional[str] = None, source_label: str = "rag") -> List[Dict]:
+def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, user_id: Optional[str] = None, source_label: str = "rag") -> List[Dict]:
     """
     Universal document loader and chunker using MarkItDown.
     Converts all supported formats to markdown, then chunks intelligently.
     """
-    print(f"[RAG] Universal loader start: files={len(paths)} chunk_size={chunk_size} overlap={chunk_overlap} ns={namespace or 'default'}")
+    print(f"[RAG] Universal loader start: files={len(paths)} chunk_size={chunk_size} overlap={chunk_overlap} ns={user_id or 'default'}")
     chunks: List[Dict] = []
     seen_hashes = set()
     
@@ -377,7 +377,7 @@ def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap:
                     "start": start,
                     "end": end,
                     "content_hash": content_hash,
-                    "namespace": namespace or "default",
+                    "user_id": user_id or "default",
                     "source": source_label,
                     "external": True,
                     "heading_path": ch.get("heading_path"),
@@ -457,7 +457,7 @@ def _create_default_vector_store(dimension: int = None) -> QdrantVectorStore:
     使用连接管理器避免重复连接。
     """
     if dimension is None:
-        dimension = get_dimension(384)
+        dimension = get_dimension(512)
     
     # Check for Qdrant configuration
     qdrant_url = os.getenv("QDRANT_URL")
@@ -636,7 +636,7 @@ def embed_query(query: str) -> List[float]:
     Embed query using unified embedding (百炼 with fallback).
     """
     embedder = get_text_embedder()
-    dimension = get_dimension(384)
+    dimension = get_dimension(512)
     try:
         vec = embedder.encode(query)
         
@@ -762,12 +762,12 @@ def search_vectors_expanded(
     # expansions
     expansions: List[str] = [query]
     
-    if enable_mqe and mqe_expansions > 0:
-        expansions.extend(_prompt_mqe(query, mqe_expansions))
-    if enable_hyde:
-        hyde_text = _prompt_hyde(query)
-        if hyde_text:
-            expansions.append(hyde_text)
+    # if enable_mqe and mqe_expansions > 0:
+    #     expansions.extend(_prompt_mqe(query, mqe_expansions))
+    # if enable_hyde:
+    #     hyde_text = _prompt_hyde(query)
+    #     if hyde_text:
+    #         expansions.append(hyde_text)
 
     # unique and trim
     uniq: List[str] = []
@@ -787,7 +787,6 @@ def search_vectors_expanded(
         where["data_source"] = "rag_pipeline"
     if user_id:
         where["user_id"] = user_id
-
     # collect hits across expansions
     agg: Dict[str, Dict] = {}
     for q in expansions:
@@ -1138,7 +1137,7 @@ def create_rag_pipeline(
     Returns:
         Dict containing store, namespace, and helper functions
     """
-    dimension = get_dimension(384)
+    dimension = get_dimension(512)
     
     store = QdrantVectorStore(
         url=qdrant_url,
@@ -1147,14 +1146,14 @@ def create_rag_pipeline(
         vector_size=dimension,
         distance="cosine"
     )
-    
-    def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100):
+
+    def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, user_id: str = "default") -> int:
         """Add documents to RAG pipeline"""
         chunks = load_and_chunk_texts(
             paths=file_paths,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            namespace=user_id,
+            user_id=user_id,
             source_label="rag"
         )
         index_chunks(
@@ -1179,7 +1178,8 @@ def create_rag_pipeline(
         top_k: int = 8, 
         enable_mqe: bool = False,
         enable_hyde: bool = False,
-        score_threshold: Optional[float] = None
+        score_threshold: Optional[float] = None,
+        user_id: str = "default"
     ):
         """Advanced search with query expansion"""
         return search_vectors_expanded(

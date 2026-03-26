@@ -37,7 +37,7 @@ class QdrantConnectionManager:
         url: Optional[str] = None,
         api_key: Optional[str] = None,
         collection_name: str = "hello_agents_vectors",
-        vector_size: int = 384,
+        vector_size: int = 512,
         distance: str = "cosine",
         timeout: int = 30,
         **kwargs
@@ -75,7 +75,7 @@ class QdrantVectorStore:
         url: Optional[str] = None,
         api_key: Optional[str] = None,
         collection_name: str = "hello_agents_vectors",
-        vector_size: int = 384,
+        vector_size: int = 512,
         distance: str = "cosine",
         timeout: int = 30,
         **kwargs
@@ -377,7 +377,7 @@ class QdrantVectorStore:
                 search_params = models.SearchParams(hnsw_ef=self.search_ef, exact=self.search_exact)
             except Exception:
                 search_params = None
-
+  
             # 兼容新旧 qdrant-client API
             # 1.16.0+ 使用 query_points(), <1.16.0 使用 search()
             try:
