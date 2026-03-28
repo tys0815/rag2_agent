@@ -203,7 +203,7 @@ class PerceptualMemory(BaseMemory):
         return memory_item.id
 
     def retrieve(self, query: str, limit: int = 5,
-                user_id=None, agent_id=None, session_id=None,
+                user_id=None,
                 target_modality=None, **kwargs) -> List[MemoryItem]:
         """检索感知记忆（只按 user_id 过滤，忽略 agent_id / session_id）"""
         query_modality = kwargs.get("query_modality", target_modality or "text")

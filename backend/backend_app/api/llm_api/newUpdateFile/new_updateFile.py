@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException
-from typing import List
+from typing import List, Dict
 from datetime import datetime
 import logging
 import os
 import asyncio
 import hashlib
 import json
+import tempfile
+import shutil
 
 from helloAgents.tools.async_executor import AsyncToolExecutor
 from helloAgents.utils.helpers import get_file_path_from_upload_async
@@ -16,81 +18,99 @@ from helloAgents.tools.registry import global_registry
 logger = logging.getLogger(__name__)
 new_updateFile_router = APIRouter()
 
+# ------------------------------
+# ⚙️ 企业级配置
+# ------------------------------
+MANIFEST_FILE = ".file_manifest.json"
+CHUNK_SIZE = 8192
 MAX_PARALLEL_FILES = 4
 
-
 # ------------------------------
-# 🔥 企业级文件去重 + 版本化
+# 🛠️ 核心工具函数
 # ------------------------------
-def calculate_content_hash(content: bytes) -> str:
-    """计算文件内容 SHA256 哈希（唯一标识）"""
-    return hashlib.sha256(content).hexdigest()
 
+def load_manifest(ns_path: str) -> Dict[str, str]:
+    manifest_path = os.path.join(ns_path, MANIFEST_FILE)
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            logger.warning(f"读取 manifest 失败: {manifest_path}")
+            return {}
+    return {}
+
+def save_manifest(ns_path: str, manifest: Dict[str, str]):
+    manifest_path = os.path.join(ns_path, MANIFEST_FILE)
+    temp_path = manifest_path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    os.replace(temp_path, manifest_path)
+
+def calculate_file_hash_stream(file_path: str) -> str:
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(CHUNK_SIZE):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+def calculate_upload_hash_stream(file_obj) -> str:
+    sha256 = hashlib.sha256()
+    file_obj.file.seek(0)
+    while chunk := file_obj.file.read(CHUNK_SIZE):
+        sha256.update(chunk)
+    file_obj.file.seek(0)
+    return sha256.hexdigest()
 
 async def save_file_with_version_and_deduplicate(
     upload_file: UploadFile,
     user_id: str,
     save_dir: str = "./knowledge_base"
 ) -> dict:
-    """
-    企业级文件保存：
-    1. 相同内容自动去重
-    2. 同名不同内容自动版本化
-    3. 永不覆盖
-    """
+    original_name = upload_file.filename.strip()
+    name, ext = os.path.splitext(original_name)
+    ns_path = os.path.join(save_dir, user_id)
+
+    os.makedirs(ns_path, exist_ok=True)
+    manifest = load_manifest(ns_path)
+
     try:
-        # 读取内容
-        content = await upload_file.read()
-        file_hash = calculate_content_hash(content)
-        original_name = upload_file.filename.strip()
-        name, ext = os.path.splitext(original_name)
+        new_file_hash = calculate_upload_hash_stream(upload_file)
 
-        # 目录
-        ns_path = os.path.join(save_dir, user_id)
-        os.makedirs(ns_path, exist_ok=True)
+        for existing_name, existing_hash in manifest.items():
+            if existing_hash == new_file_hash:
+                return {
+                    "success": True,
+                    "is_duplicate": True,
+                    "filename": original_name,
+                    "file_path": os.path.join(ns_path, existing_name),
+                    "message": f"内容已存在（同名：{existing_name}），自动去重"
+                }
 
-        # --------------------------
-        # 1. 内容去重（相同内容直接跳过）
-        # --------------------------
-        for fname in os.listdir(ns_path):
-            fpath = os.path.join(ns_path, fname)
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                with open(fpath, "rb") as f:
-                    existing_hash = calculate_content_hash(f.read())
-                if existing_hash == file_hash:
-                    return {
-                        "success": True,
-                        "is_duplicate": True,
-                        "filename": original_name,
-                        "file_path": fpath,
-                        "message": "内容已存在，自动去重"
-                    }
-            except Exception:
-                continue
-
-        # --------------------------
-        # 2. 同名自动版本化
-        # --------------------------
         target_name = original_name
         version = 1
-        while os.path.exists(os.path.join(ns_path, target_name)):
+        while target_name in manifest:
             version += 1
             target_name = f"{name}_v{version}{ext}"
-
+        
         final_path = os.path.join(ns_path, target_name)
-        with open(final_path, "wb") as f:
-            f.write(content)
 
-        await upload_file.seek(0)  # 重置指针
+        with tempfile.NamedTemporaryFile(dir=ns_path, delete=False) as tmp_file:
+            shutil.copyfileobj(upload_file.file, tmp_file)
+            temp_file_path = tmp_file.name
+        
+        os.replace(temp_file_path, final_path)
+
+        manifest[target_name] = new_file_hash
+        save_manifest(ns_path, manifest)
 
         return {
             "success": True,
             "is_duplicate": False,
             "filename": original_name,
             "file_path": final_path,
-            "message": f"已保存（版本v{version})" if version > 1 else "已保存"
+            "hash": new_file_hash,
+            "message": f"已保存（版本 v{version})" if version > 1 else "已保存"
         }
 
     except Exception as e:
@@ -101,36 +121,27 @@ async def save_file_with_version_and_deduplicate(
             "error": str(e)
         }
 
-
 # ------------------------------
-# 主处理逻辑
+# 主处理逻辑（已补全记忆）
 # ------------------------------
 async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
     memory_tool: MemoryTool = global_registry.get_tool("memory")
-
     rag_tool: RAGTool = global_registry.get_tool("rag")
-    # rag_tool._clear_knowledge_base(confirm=False, namespace=namespace) 
 
-    # ======================
-    # 基础校验
-    # ======================
     if not files:
         raise HTTPException(status_code=400, detail="请上传至少一个文件")
     if not user_id.strip():
         raise HTTPException(status_code=400, detail="命名空间不能为空")
 
-    # ======================
-    # 并发保存（去重+版本）
-    # ======================
-    save_tasks = [
-        save_file_with_version_and_deduplicate(f, user_id)
-        for f in files
-    ]
+    semaphore = asyncio.Semaphore(MAX_PARALLEL_FILES)
+    
+    async def save_with_limit(f):
+        async with semaphore:
+            return await save_file_with_version_and_deduplicate(f, user_id)
+
+    save_tasks = [save_with_limit(f) for f in files]
     save_results = await asyncio.gather(*save_tasks)
 
-    # ======================
-    # 分类
-    # ======================
     saved_files = []
     save_errors = []
     duplicate_files = []
@@ -143,22 +154,75 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
         else:
             saved_files.append(res)
 
-    # ======================
-    # 记录失败记忆
-    # ======================
+    # ============================
+    # ✅ 记忆存储开始（我补充的）
+    # ============================
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. 记录【上传成功】记忆
+    for file in saved_files:
+        try:
+            memory_tool.run({
+                "action": "add",
+                "user_id": user_id,
+                "memory_type": "semantic",  # 知识类记忆
+                "content": f"【文件上传成功】{now} | 用户{user_id} 上传文件「{file['filename']}」已存入知识库",
+                "file_path": file["file_path"]
+            })
+        except Exception as e:
+            logger.warning(f"记忆保存失败: {e}")
+
+    # 2. 记录【重复文件】记忆
+    for dup in duplicate_files:
+        try:
+            memory_tool.run({
+                "action": "add",
+                "user_id": user_id,
+                "memory_type": "working",
+                "content": f"【文件重复】{now} | 文件「{dup['filename']}」已存在，自动跳过",
+                "file_path": dup["file_path"]
+            })
+        except:
+            pass
+
+    # 3. 记录【上传失败】记忆
     for err in save_errors:
         memory_tool.run({
             "action": "add",
             "user_id": user_id,
             "memory_type": "perceptual",
-            "content": f"{now} 用户{user_id}上传文件 {err['filename']} 保存失败：{err['error']}",
+            "content": f"【上传失败】{now} | 文件「{err['filename']}」保存失败：{err['error']}",
             "file_path": ""
         })
 
-    # ======================
-    # 无文件可处理
-    # ======================
+    # 4. 记录【本次上传总结】记忆（非常有用）
+    total = len(files)
+    success_cnt = len(saved_files)
+    dup_cnt = len(duplicate_files)
+    fail_cnt = len(save_errors)
+
+    summary_content = (
+        f"【上传总结】{now} | 用户{user_id} 共上传 {total} 个文件\n"
+        f"✅ 成功入库：{success_cnt} 个\n"
+        f"⚠️ 重复跳过：{dup_cnt} 个\n"
+        f"❌ 上传失败：{fail_cnt} 个"
+    )
+
+    try:
+        memory_tool.run({
+            "action": "add",
+            "user_id": user_id,
+            "memory_type": "episodic",  # 情景/事件记忆
+            "content": summary_content,
+            "file_path": ""
+        })
+    except:
+        pass
+
+    # ============================
+    # ✅ 记忆存储结束
+    # ============================
+
     if not saved_files:
         return {
             "success": len(save_errors) == 0,
@@ -169,9 +233,7 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
             "duplicates": duplicate_files
         }
 
-    # ======================
-    # 并行入库
-    # ======================
+    # RAG 入库（后台执行，不暴露）
     file_paths = [f["file_path"] for f in saved_files]
     result = rag_tool.run({
         "action": "add_document",
@@ -179,39 +241,6 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
         "user_id": user_id
     })
 
-    # ======================
-    # 结果处理
-    # ======================
-    # success_list = []
-    # fail_list = []
-
-    # for idx, file_info in enumerate(saved_files):
-    #     res = execute_results[idx]
-    #     fn = file_info["filename"]
-    #     fp = file_info["file_path"]
-
-    #     if res["status"] == "success":
-    #         success_list.append({"filename": fn, "file_path": fp})
-    #         memory_tool.run({
-    #             "action": "add",
-    #             "user_id": namespace,
-    #             "memory_type": "semantic",
-    #             "content": f"{now} 用户{namespace}已上传文件：{fn}，已入库知识库",
-    #             "file_path": fp
-    #         })
-    #     else:
-    #         fail_list.append({"filename": fn, "error": res["result"]})
-    #         memory_tool.run({
-    #             "action": "add",
-    #             "user_id": namespace,
-    #             "memory_type": "perceptual",
-    #             "content": f"{now} 用户{namespace}文件 {fn} 处理失败：{res['result']}",
-    #             "file_path": fp
-    #         })
-
-    # ======================
-    # 最终返回（包含去重信息）
-    # ======================
     return {
         "success": True,
         "msg": f"成功 {len(file_paths)} | 去重 {len(duplicate_files)}",
@@ -224,7 +253,6 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
             "result": result
         }
     }
-
 
 # ------------------------------
 # 路由

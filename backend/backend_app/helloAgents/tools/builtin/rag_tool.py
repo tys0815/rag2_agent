@@ -487,58 +487,15 @@ class RAGTool(Tool):
             ToolParameter(
                 name="action",
                 type="string",
-                description="操作类型： search(搜索), stats(统计)",
+                description="操作类型： search(搜索)",
                 required=True
             ),
-            
-            # 内容参数
-            # ToolParameter(
-            #     name="file_path",
-            #     type="string",
-            #     description="文档文件路径（支持PDF、Word、Excel、PPT、图片、音频等多种格式）",
-            #     required=False
-            # ),
-            # ToolParameter(
-            #     name="text",
-            #     type="string",
-            #     description="要添加的文本内容",
-            #     required=False
-            # ),
-            # ToolParameter(
-            #     name="question",
-            #     type="string", 
-            #     description="用户问题（用于智能问答）",
-            #     required=False
-            # ),
             ToolParameter(
                 name="query",
                 type="string",
                 description="搜索查询词（用于基础搜索）",
                 required=False
             ),
-            
-            # 可选配置参数
-            # ToolParameter(
-            #     name="namespace",
-            #     type="string",
-            #     description="知识库命名空间（用于隔离不同项目，默认：default）",
-            #     required=False,
-            #     default="default"
-            # ),
-            # ToolParameter(
-            #     name="limit",
-            #     type="integer",
-            #     description="返回结果数量（默认：5）",
-            #     required=False,
-            #     default=5
-            # ),
-            # ToolParameter(
-            #     name="include_citations",
-            #     type="boolean",
-            #     description="是否包含引用来源（默认：true）",
-            #     required=False,
-            #     default=True
-            # )
         ]
 
     @tool_action("rag_add_document", "添加文档到知识库（支持PDF、Word、Excel、PPT、图片、音频等多种格式）")

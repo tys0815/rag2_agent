@@ -762,12 +762,12 @@ def search_vectors_expanded(
     # expansions
     expansions: List[str] = [query]
     
-    # if enable_mqe and mqe_expansions > 0:
-    #     expansions.extend(_prompt_mqe(query, mqe_expansions))
-    # if enable_hyde:
-    #     hyde_text = _prompt_hyde(query)
-    #     if hyde_text:
-    #         expansions.append(hyde_text)
+    if enable_mqe and mqe_expansions > 0:
+        expansions.extend(_prompt_mqe(query, mqe_expansions))
+    if enable_hyde:
+        hyde_text = _prompt_hyde(query)
+        if hyde_text:
+            expansions.append(hyde_text)
 
     # unique and trim
     uniq: List[str] = []

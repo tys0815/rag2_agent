@@ -117,7 +117,7 @@ async def universal_chat(
             tool_registry=global_registry
         )
         # 调用助手（通过依赖注入获取）
-        response = agent.run(
+        response = await agent.run(
             input_text=body.text,
             user_id=body.user_id,
             agent_id=body.agent_id,

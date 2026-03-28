@@ -218,10 +218,10 @@ class SemanticMemory(BaseMemory):
             self.nlp_models = {}
     
     # =========================================================================
-    # 🔹 核心：添加语义记忆（只存 user_id，不存 agent_id / session_id）
+    # 🔹 核心：添加语义记忆（只存 user_id，不存 session_id）
     # =========================================================================
     def add(self, memory_item: MemoryItem) -> str:
-        """添加语义记忆（知识库：只归属用户）"""
+        """添加语义记忆（用户喜好）"""
         try:
             user_id = memory_item.user_id
 
@@ -262,7 +262,7 @@ class SemanticMemory(BaseMemory):
             if not success:
                 logger.warning("⚠️ 向量存储失败，但记忆已添加到图数据库")
             
-            # 5. 添加实体信息到元数据（不存 agent_id / session_id）
+            # 5. 添加实体信息到元数据（不存 session_id）
             memory_item.metadata["entities"] = [e.entity_id for e in entities]
             memory_item.metadata["relations"] = [
                 f"{r.from_entity}-{r.relation_type}-{r.to_entity}" for r in relations
@@ -279,7 +279,7 @@ class SemanticMemory(BaseMemory):
             raise
     
     def retrieve(self, query: str, limit: int = 5, **kwargs) -> List[MemoryItem]:
-        """检索语义记忆（只按 user_id 过滤，忽略 agent_id / session_id）"""
+        """检索语义记忆（只按 user_id 过滤，忽略 session_id）"""
         try:
             user_id = kwargs.get("user_id")
 

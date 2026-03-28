@@ -160,8 +160,8 @@ class EpisodicMemory(BaseMemory):
             pass
 
         return memory_item.id
-    
-    def retrieve(self, query: str, limit: int = 5, user_id=None, agent_id=None, session_id=None,** kwargs) -> List[MemoryItem]:
+
+    def retrieve(self, query: str, limit: int = 5, user_id=None, session_id=None, **kwargs) -> List[MemoryItem]:
         """检索情景记忆（支持四层过滤）"""
         time_range: Optional[Tuple[datetime, datetime]] = kwargs.get("time_range")
         importance_threshold = kwargs.get("min_importance", 0.0)
@@ -189,8 +189,6 @@ class EpisodicMemory(BaseMemory):
             where = {"memory_type": "episodic"}
             if user_id:
                 where["user_id"] = user_id
-            if agent_id:
-                where["agent_id"] = agent_id        # 关键：按助手过滤
             if session_id:
                 where["session_id"] = session_id    # 按会话过滤
 
@@ -245,7 +243,7 @@ class EpisodicMemory(BaseMemory):
         # 回退方案
         if not results:
             query_lower = query.lower()
-            for ep in self._filter_episodes(user_id, agent_id, session_id):
+            for ep in self._filter_episodes(user_id, session_id):
                 if query_lower in ep.content.lower():
                     recency_score = 1.0 / (1.0 + max(0.0, (now_ts - int(ep.timestamp.timestamp())) / 86400.0))
                     combined = 0.5 * 0.8 + recency_score * 0.2 * (0.8 + ep.importance * 0.4)
@@ -426,12 +424,10 @@ class EpisodicMemory(BaseMemory):
             "memory_type": "episodic"
         }
 
-    def _filter_episodes(self, user_id=None, agent_id=None, session_id=None) -> List[Episode]:
+    def _filter_episodes(self, user_id=None, session_id=None) -> List[Episode]:
         res = self.episodes
         if user_id:
             res = [e for e in res if e.user_id == user_id]
-        if agent_id:
-            res = [e for e in res if e.agent_id == agent_id]
         if session_id:
             res = [e for e in res if e.session_id == session_id]
         return res

@@ -45,11 +45,11 @@ class WorkingMemory(BaseMemory):
         self.max_age_minutes = getattr(self.config, 'working_memory_ttl_minutes', 120)  # 单条记忆过期时间
 
         # ===================== 四层内存存储结构 =====================
-        # user_id → agent_id → session_id → List[MemoryItem]
-        self.memories: Dict[str, Dict[str, Dict[str, List[MemoryItem]]]] = {}  # 记忆主体
-        self.memory_heaps: Dict[str, Dict[str, Dict[str, List]]] = {}           # 优先级堆（快速淘汰低优先级）
-        self.session_tokens: Dict[str, Dict[str, Dict[str, int]]] = {}          # 各会话Token计数
-        self.session_last_active: Dict[str, Dict[str, Dict[str, datetime]]] = {} # 会话最后活跃时间（用于清理）
+        # user_id → session_id → List[MemoryItem]
+        self.memories: Dict[str, Dict[str, List[MemoryItem]]] = {}  # 记忆主体
+        self.memory_heaps: Dict[str, Dict[str, List]] = {}           # 优先级堆（快速淘汰低优先级）
+        self.session_tokens: Dict[str, Dict[str, int]] = {}          # 各会话Token计数
+        self.session_last_active: Dict[str, Dict[str, datetime]] = {} # 会话最后活跃时间（用于清理）
 
         # 内存保护机制（防止服务器长期运行OOM）
         self.max_inactive_minutes = 60       # 会话闲置60分钟自动销毁
@@ -61,7 +61,6 @@ class WorkingMemory(BaseMemory):
 
     def _get_session(self,
                     user_id: str = "default_user",
-                    agent_id: str = "default_agent",
                     session_id: str = "default_session"):
         """
         【内部核心】获取或自动初始化指定用户+助手+会话的存储结构
@@ -77,29 +76,23 @@ class WorkingMemory(BaseMemory):
             self.session_tokens[user_id] = {}
             self.session_last_active[user_id] = {}
 
-        # 2. 初始化助手层级（RAG / 旅游 / 写作...）
-        if agent_id not in self.memories[user_id]:
-            self.memories[user_id][agent_id] = {}
-            self.memory_heaps[user_id][agent_id] = {}
-            self.session_tokens[user_id][agent_id] = {}
-            self.session_last_active[user_id][agent_id] = {}
 
-        # 3. 初始化会话层级
-        if session_id not in self.memories[user_id][agent_id]:
-            self.memories[user_id][agent_id][session_id] = []
-            self.memory_heaps[user_id][agent_id][session_id] = []
-            self.session_tokens[user_id][agent_id][session_id] = 0
+        # 2. 初始化会话层级
+        if session_id not in self.memories[user_id]:
+            self.memories[user_id][session_id] = []
+            self.memory_heaps[user_id][session_id] = []
+            self.session_tokens[user_id][session_id] = 0
 
         # 4. 刷新会话最后活跃时间
-        self.session_last_active[user_id][agent_id][session_id] = datetime.now()
+        self.session_last_active[user_id][session_id] = datetime.now()
 
         # 5. 触发自动清理（惰性清理，不阻塞业务）
         self._cleanup_inactive_sessions()
 
         return (
-            self.memories[user_id][agent_id][session_id],
-            self.memory_heaps[user_id][agent_id][session_id],
-            self.session_tokens[user_id][agent_id][session_id]
+            self.memories[user_id][session_id],
+            self.memory_heaps[user_id][session_id],
+            self.session_tokens[user_id][session_id]
         )
 
     def _cleanup_inactive_sessions(self):
@@ -149,16 +142,16 @@ class WorkingMemory(BaseMemory):
         """生成全局唯一的会话ID"""
         return f"ses_{uuid.uuid4().hex[:16]}"
 
-    def clear_session(self, user_id: str, agent_id: str, session_id: str):
+    def clear_session(self, user_id: str, session_id: str):
         """
         清空指定用户+助手下的某个会话
         用于：切换会话、手动删除会话、超时销毁
         """
         try:
-            self.memories[user_id][agent_id].pop(session_id, None)
-            self.memory_heaps[user_id][agent_id].pop(session_id, None)
-            self.session_tokens[user_id][agent_id].pop(session_id, None)
-            self.session_last_active[user_id][agent_id].pop(session_id, None)
+            self.memories[user_id].pop(session_id, None)
+            self.memory_heaps[user_id].pop(session_id, None)
+            self.session_tokens[user_id].pop(session_id, None)
+            self.session_last_active[user_id].pop(session_id, None)
         except KeyError:
             pass
 
@@ -169,7 +162,6 @@ class WorkingMemory(BaseMemory):
     def add(self,
             memory_item: MemoryItem,
             user_id: str = "default_user",
-            agent_id: str = "default_agent",
             session_id: str = "default_session") -> str:
         """
         添加一条记忆到工作记忆
@@ -177,17 +169,16 @@ class WorkingMemory(BaseMemory):
         参数:
             memory_item: 记忆对象
             user_id: 用户ID
-            agent_id: 助手ID（rag/travel）
             session_id: 会话ID
 
         返回:
             记忆ID
         """
         # 获取会话存储
-        memories, heap, _ = self._get_session(user_id, agent_id, session_id)
+        memories, heap, _ = self._get_session(user_id, session_id)
 
         # 先清理本会话内过期记忆
-        self._expire_old_memories(user_id, agent_id, session_id)
+        self._expire_old_memories(user_id, session_id)
 
         # 计算优先级并加入堆
         priority = self._calculate_priority(memory_item)
@@ -197,10 +188,10 @@ class WorkingMemory(BaseMemory):
         memories.append(memory_item)
 
         # 增加Token计数
-        self.session_tokens[user_id][agent_id][session_id] += len(memory_item.content.split())
+        self.session_tokens[user_id][session_id] += len(memory_item.content.split())
 
         # 强制执行容量/Token限制
-        self._enforce_capacity_limits(user_id, agent_id, session_id)
+        self._enforce_capacity_limits(user_id, session_id)
 
         return memory_item.id
 
@@ -208,7 +199,6 @@ class WorkingMemory(BaseMemory):
                  query: str,
                  limit: int = 5,
                  user_id: str = "default_user",
-                 agent_id: str = "default_agent",
                  session_id: str = "default_session",** kwargs) -> List[MemoryItem]:
         """
         根据查询内容检索相关工作记忆（语义+关键词混合检索）
@@ -225,12 +215,12 @@ class WorkingMemory(BaseMemory):
         """
         # 会话不存在则返回空
         try:
-            memories = self.memories[user_id][agent_id][session_id]
+            memories = self.memories[user_id][session_id]
         except KeyError:
             return []
 
         # 清理过期记忆
-        self._expire_old_memories(user_id, agent_id, session_id)
+        self._expire_old_memories(user_id, session_id)
 
         # 过滤未被遗忘的有效记忆
         active_memories = [m for m in memories if not m.metadata.get("forgotten", False)]
@@ -293,7 +283,6 @@ class WorkingMemory(BaseMemory):
                importance: float = None,
                metadata: Dict[str, Any] = None,
                user_id: str = "default_user",
-               agent_id: str = "default_agent",
                session_id: str = "default_session") -> bool:
         """
         更新指定记忆内容、重要性或元数据
@@ -302,7 +291,7 @@ class WorkingMemory(BaseMemory):
             bool: 是否更新成功
         """
         try:
-            memories = self.memories[user_id][agent_id][session_id]
+            memories = self.memories[user_id][session_id]
         except KeyError:
             return False
 
@@ -313,7 +302,7 @@ class WorkingMemory(BaseMemory):
                     old_tokens = len(memory.content.split())
                     memory.content = content
                     new_tokens = len(content.split())
-                    self.session_tokens[user_id][agent_id][session_id] += (new_tokens - old_tokens)
+                    self.session_tokens[user_id][session_id] += (new_tokens - old_tokens)
 
                 # 更新重要性
                 if importance:
@@ -324,14 +313,13 @@ class WorkingMemory(BaseMemory):
                     memory.metadata.update(metadata)
 
                 # 重新计算堆优先级
-                self._update_heap_priority(user_id, agent_id, session_id)
+                self._update_heap_priority(user_id, session_id)
                 return True
         return False
 
     def remove(self,
                memory_id: str,
                user_id: str = "default_user",
-               agent_id: str = "default_agent",
                session_id: str = "default_session") -> bool:
         """
         从指定会话中删除一条记忆
@@ -340,15 +328,15 @@ class WorkingMemory(BaseMemory):
             bool: 是否删除成功
         """
         try:
-            memories = self.memories[user_id][agent_id][session_id]
+            memories = self.memories[user_id][session_id]
             for i, m in enumerate(memories):
                 if m.id == memory_id:
                     # 移除记忆
                     memories.pop(i)
                     # 扣除Token
-                    self.session_tokens[user_id][agent_id][session_id] -= len(m.content.split())
+                    self.session_tokens[user_id][session_id] -= len(m.content.split())
                     # 重建堆
-                    self._update_heap_priority(user_id, agent_id, session_id)
+                    self._update_heap_priority(user_id, session_id)
                     return True
         except KeyError:
             return False
@@ -357,16 +345,15 @@ class WorkingMemory(BaseMemory):
     def has_memory(self,
                    memory_id: str,
                    user_id: str = None,
-                   agent_id: str = None,
                    session_id: str = None) -> bool:
         """
         检查记忆是否存在
         可全局查找/按用户查找/按会话查找
         """
         # 指定范围检查
-        if user_id and agent_id and session_id:
+        if user_id and session_id:
             try:
-                return any(m.id == memory_id for m in self.memories[user_id][agent_id][session_id])
+                return any(m.id == memory_id for m in self.memories[user_id][session_id])
             except KeyError:
                 return False
 
@@ -379,7 +366,7 @@ class WorkingMemory(BaseMemory):
                             return True
         return False
 
-    def clear(self, user_id: str = None, agent_id: str = None, session_id: str = None):
+    def clear(self, user_id: str = None, session_id: str = None):
         """
         清空记忆（支持三级粒度）
         - 不传参数：清空全局所有记忆
@@ -387,13 +374,8 @@ class WorkingMemory(BaseMemory):
         - 传user+agent：清空该用户下该助手的所有会话
         - 传全量：清空指定会话
         """
-        if user_id and agent_id and session_id:
-            self.clear_session(user_id, agent_id, session_id)
-        elif user_id and agent_id:
-            self.memories[user_id].pop(agent_id, None)
-            self.memory_heaps[user_id].pop(agent_id, None)
-            self.session_tokens[user_id].pop(agent_id, None)
-            self.session_last_active[user_id].pop(agent_id, None)
+        if user_id and session_id:
+            self.clear_session(user_id, session_id)
         elif user_id:
             self.memories.pop(user_id, None)
             self.memory_heaps.pop(user_id, None)
@@ -405,16 +387,16 @@ class WorkingMemory(BaseMemory):
             self.session_tokens.clear()
             self.session_last_active.clear()
 
-    def get_stats(self, user_id: str = None, agent_id: str = None, session_id: str = None) -> Dict[str, Any]:
+    def get_stats(self, user_id: str = None, session_id: str = None) -> Dict[str, Any]:
         """
         获取记忆统计信息
         支持：全局统计 / 用户维度 / 助手维度 / 会话维度
         """
         # 单会话详情
-        if user_id and agent_id and session_id:
+        if user_id and session_id:
             try:
-                mem_list = self.memories[user_id][agent_id][session_id]
-                token_cnt = self.session_tokens[user_id][agent_id][session_id]
+                mem_list = self.memories[user_id][session_id]
+                token_cnt = self.session_tokens[user_id][session_id]
                 return {
                     "count": len(mem_list),
                     "tokens": token_cnt,
@@ -428,11 +410,9 @@ class WorkingMemory(BaseMemory):
         total_mem = 0
         total_tok = 0
         user_count = len(self.memories)
-        agent_count = 0
         session_count = 0
 
         for u in self.memories:
-            agent_count += len(self.memories[u])
             for a in self.memories[u]:
                 session_count += len(self.memories[u][a])
                 for s in self.memories[u][a]:
@@ -443,7 +423,6 @@ class WorkingMemory(BaseMemory):
             "total_memories": total_mem,
             "total_tokens": total_tok,
             "user_count": user_count,
-            "agent_count": agent_count,
             "session_count": session_count,
             "memory_type": "working"
         }
@@ -451,13 +430,12 @@ class WorkingMemory(BaseMemory):
     def get_recent(self,
                    limit: int = 10,
                    user_id: str = "default_user",
-                   agent_id: str = "default_agent",
                    session_id: str = "default_session") -> List[MemoryItem]:
         """
         获取当前会话最近N条记忆（按时间倒序）
         """
         try:
-            mem_list = self.memories[user_id][agent_id][session_id]
+            mem_list = self.memories[user_id][session_id]
             return sorted(mem_list, key=lambda x: x.timestamp, reverse=True)[:limit]
         except KeyError:
             return []
@@ -465,40 +443,37 @@ class WorkingMemory(BaseMemory):
     def get_important(self,
                       limit: int = 10,
                       user_id: str = "default_user",
-                      agent_id: str = "default_agent",
                       session_id: str = "default_session") -> List[MemoryItem]:
         """
         获取当前会话最重要的N条记忆（按重要性倒序）
         """
         try:
-            mem_list = self.memories[user_id][agent_id][session_id]
+            mem_list = self.memories[user_id][session_id]
             return sorted(mem_list, key=lambda x: x.importance, reverse=True)[:limit]
         except KeyError:
             return []
 
     def get_all(self,
                 user_id: str = "default_user",
-                agent_id: str = "default_agent",
                 session_id: str = "default_session") -> List[MemoryItem]:
         """
         获取当前会话所有记忆（副本，防止外部篡改）
         """
         try:
-            return self.memories[user_id][agent_id][session_id].copy()
+            return self.memories[user_id][session_id].copy()
         except KeyError:
             return []
 
     def get_context_summary(self,
                             max_length: int = 500,
                             user_id: str = "default_user",
-                            agent_id: str = "default_agent",
                             session_id: str = "default_session") -> str:
         """
         生成当前会话的上下文摘要（用于给LLM提供简短上下文）
         按重要性+时间排序，自动截断长度
         """
         try:
-            mem_list = self.memories[user_id][agent_id][session_id]
+            mem_list = self.memories[user_id][session_id]
             if not mem_list:
                 return "No working memories available."
         except KeyError:
@@ -527,7 +502,6 @@ class WorkingMemory(BaseMemory):
                threshold: float = 0.1,
                max_age_days: int = 1,
                user_id: str = "default_user",
-               agent_id: str = "default_agent",
                session_id: str = "default_session") -> int:
         """
         主动遗忘机制（模拟人脑记忆消退）
@@ -544,7 +518,7 @@ class WorkingMemory(BaseMemory):
             遗忘条数
         """
         try:
-            memories = self.memories[user_id][agent_id][session_id]
+            memories = self.memories[user_id][session_id]
         except KeyError:
             return 0
 
@@ -582,7 +556,7 @@ class WorkingMemory(BaseMemory):
         # 执行删除并统计
         forgotten_count = 0
         for memory_id in list(set(to_remove)):
-            if self.remove(memory_id, user_id, agent_id, session_id):
+            if self.remove(memory_id, user_id, session_id):
                 forgotten_count += 1
 
         return forgotten_count
@@ -607,7 +581,7 @@ class WorkingMemory(BaseMemory):
         decay_factor = self.config.decay_factor ** (hours_passed / 6)
         return max(0.1, decay_factor)
 
-    def _enforce_capacity_limits(self, uid, aid, sid):
+    def _enforce_capacity_limits(self, uid, sid):
         """
         强制执行单会话容量限制：
         1. 不超过最大条数
@@ -615,27 +589,27 @@ class WorkingMemory(BaseMemory):
         超限则自动删除优先级最低的记忆
         """
         try:
-            mem_list = self.memories[uid][aid][sid]
-            token_count = self.session_tokens[uid][aid][sid]
+            mem_list = self.memories[uid][sid]
+            token_count = self.session_tokens[uid][sid]
 
             # 条数超限
             while len(mem_list) > self.max_capacity:
-                self._remove_lowest_priority_memory(uid, aid, sid)
+                self._remove_lowest_priority_memory(uid, sid)
 
             # Token超限
             while token_count > self.max_tokens:
-                self._remove_lowest_priority_memory(uid, aid, sid)
-                token_count = self.session_tokens[uid][aid][sid]
+                self._remove_lowest_priority_memory(uid, sid)
+                token_count = self.session_tokens[uid][sid]
         except KeyError:
             pass
 
-    def _expire_old_memories(self, uid, aid, sid):
+    def _expire_old_memories(self, uid, sid):
         """
         清理当前会话中TTL过期的记忆
         并同步更新Token计数与堆结构
         """
         try:
-            memories = self.memories[uid][aid][sid]
+            memories = self.memories[uid][sid]
             cutoff = datetime.now() - timedelta(minutes=self.max_age_minutes)
             kept_memories = []
             removed_tokens = 0
@@ -651,11 +625,11 @@ class WorkingMemory(BaseMemory):
                 return
 
             # 更新存储
-            self.memories[uid][aid][sid] = kept_memories
-            self.session_tokens[uid][aid][sid] = max(0, self.session_tokens[uid][aid][sid] - removed_tokens)
+            self.memories[uid][sid] = kept_memories
+            self.session_tokens[uid][sid] = max(0, self.session_tokens[uid][sid] - removed_tokens)
 
             # 重建堆
-            heap = self.memory_heaps[uid][aid][sid]
+            heap = self.memory_heaps[uid][sid]
             heap.clear()
             for m in kept_memories:
                 priority = self._calculate_priority(m)
@@ -663,12 +637,12 @@ class WorkingMemory(BaseMemory):
         except KeyError:
             pass
 
-    def _remove_lowest_priority_memory(self, uid, aid, sid):
+    def _remove_lowest_priority_memory(self, uid, sid):
         """
         删除当前会话中优先级最低的记忆
         """
         try:
-            mem_list = self.memories[uid][aid][sid]
+            mem_list = self.memories[uid][sid]
             if not mem_list:
                 return
 
@@ -681,17 +655,17 @@ class WorkingMemory(BaseMemory):
                     lowest_memory = m
 
             if lowest_memory:
-                self.remove(lowest_memory.id, uid, aid, sid)
+                self.remove(lowest_memory.id, uid, sid)
         except KeyError:
             pass
 
-    def _update_heap_priority(self, uid, aid, sid):
+    def _update_heap_priority(self, uid, sid):
         """
         完全重建堆（用于记忆更新/删除后）
         """
         try:
-            mem_list = self.memories[uid][aid][sid]
-            heap = self.memory_heaps[uid][aid][sid]
+            mem_list = self.memories[uid][sid]
+            heap = self.memory_heaps[uid][sid]
             heap.clear()
             for m in mem_list:
                 p = self._calculate_priority(m)

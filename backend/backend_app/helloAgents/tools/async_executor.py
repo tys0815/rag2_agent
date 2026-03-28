@@ -122,8 +122,11 @@ async def run_parallel_tools(registry: ToolRegistry, tasks: List[Dict[str, str]]
     Returns:
         执行结果列表
     """
-    async with AsyncToolExecutor(registry, max_workers) as executor:
-        return await executor.execute_tools_parallel(tasks)
+    executor = AsyncToolExecutor(registry, max_workers)
+    
+    # 下面完全不变
+    results = await executor.execute_tools_parallel(tasks)
+    return results
 
 
 async def run_batch_tool(registry: ToolRegistry, tool_name: str, input_list: List[str], max_workers: int = 4) -> List[Dict[str, Any]]:

@@ -29,14 +29,12 @@ class MemoryTool(Tool):
         )
 
     def run(self, parameters: Dict[str, Any]) -> str:
-        # if not self.validate_parameters(parameters):
-        #     return "❌ 参数验证失败：缺少必需的参数"
+        if not self.validate_parameters(parameters):
+            return "❌ 参数验证失败：缺少必需的参数"
 
         action = parameters.get("action")
 
-        # 所有操作必须从外部传入四层ID（关键！）
         user_id = parameters.get("user_id", "default_user")
-        agent_id = parameters.get("agent_id", "default_agent")
         session_id = parameters.get("session_id")
 
         if action == "add":
@@ -47,30 +45,26 @@ class MemoryTool(Tool):
                 file_path=parameters.get("file_path"),
                 modality=parameters.get("modality"),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "search":
             return self._search_memory(
                 query=parameters.get("query"),
                 limit=parameters.get("limit", 5),
-                memory_type=parameters.get("memory_type"),
+                memory_types=parameters.get("memory_types"),
                 min_importance=parameters.get("min_importance", 0.1),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "summary":
             return self._get_summary(
                 limit=parameters.get("limit", 10),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "stats":
             return self._get_stats(
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "update":
@@ -79,14 +73,12 @@ class MemoryTool(Tool):
                 content=parameters.get("content"),
                 importance=parameters.get("importance"),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "remove":
             return self._remove_memory(
                 memory_id=parameters.get("memory_id"),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "forget":
@@ -95,7 +87,6 @@ class MemoryTool(Tool):
                 threshold=parameters.get("threshold", 0.1),
                 max_age_days=parameters.get("max_age_days", 30),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "consolidate":
@@ -104,40 +95,44 @@ class MemoryTool(Tool):
                 to_type=parameters.get("to_type", "episodic"),
                 importance_threshold=parameters.get("importance_threshold", 0.7),
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         elif action == "clear_all":
             return self._clear_all(
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=session_id
             )
         else:
             return f"❌ 不支持的操作: {action}"
 
     def get_parameters(self) -> List[ToolParameter]:
-        """工具参数（必须包含三层ID）"""
+        """工具参数（四层记忆架构 · 仅查询）"""
         return [
-            ToolParameter(name="action", type="string", required=True, description="操作类型：add, search, summary, stats, update, remove, forget, consolidate, clear_all"),
-            ToolParameter(name="user_id", type="string", required=True, description="用户ID（多用户必须传）"),
-            ToolParameter(name="agent_id", type="string", required=True, description="智能体ID"),
-            ToolParameter(name="session_id", type="string", required=False, description="会话ID（仅对话需要，知识库不传）"),
-            ToolParameter(name="content", type="string", required=False, description="记忆内容"),
-            ToolParameter(name="query", type="string", required=False, description="搜索查询词"),
-            ToolParameter(name="memory_type", type="string", required=False, default="working", description="记忆类型：working, episodic, semantic, perceptual"),
-            ToolParameter(name="importance", type="number", required=False, description="重要性分数 0.0-1.0"),
-            ToolParameter(name="file_path", type="string", required=False, description="感知记忆文件路径"),
-            ToolParameter(name="modality", type="string", required=False, description="模态：text/image/audio"),
-            ToolParameter(name="limit", type="integer", required=False, default=5, description="结果数量限制"),
-            ToolParameter(name="memory_id", type="string", required=False, description="记忆ID（用于更新/删除）"),
-            ToolParameter(name="min_importance", type="number", required=False, default=0.1, description="最低重要性阈值"),
-            ToolParameter(name="strategy", type="string", required=False, default="importance_based", description="遗忘策略"),
-            ToolParameter(name="threshold", type="number", required=False, default=0.1, description="遗忘阈值"),
-            ToolParameter(name="max_age_days", type="integer", required=False, default=30, description="最大保留天数"),
-            ToolParameter(name="from_type", type="string", required=False, default="working", description="整合来源类型"),
-            ToolParameter(name="to_type", type="string", required=False, default="episodic", description="整合目标类型"),
-            ToolParameter(name="importance_threshold", type="number", required=False, default=0.7, description="整合重要性阈值"),
+            ToolParameter(
+                name="action",
+                type="string",
+                required=True,
+                description="【记忆操作】仅支持 search：检索用户的历史记忆、上下文、偏好、知识",
+                enum=["search"]
+            ),
+            ToolParameter(
+                name="query",
+                type="string",
+                required=True,
+                description="【必填】检索关键词，用于查找相关记忆内容"
+            ),
+            ToolParameter(
+                name="memory_type",
+                type="string",
+                required=False,
+                default="working",
+                description="""四层记忆类型（自动选择即可）：
+    - working：工作记忆｜当前对话上下文、短期信息，会话级、临时、自动清理
+    - episodic：情景记忆｜历史交互事件、学习经历、长期对话记录
+    - semantic：语义记忆｜抽象知识、用户偏好、规则、知识点、长期知识体系
+    - perceptual：感知记忆｜图片、音频、文件、多模态信息、上传记录""",
+                enum=["working", "episodic", "semantic", "perceptual"]
+            )
         ]
 
     # -------------------------------------------------------------------------
@@ -152,7 +147,6 @@ class MemoryTool(Tool):
         file_path: str = None,
         modality: str = None,
         user_id: str = "default_user",
-        agent_id: str = None,
         session_id: str = None
     ) -> str:
         try:
@@ -180,7 +174,6 @@ class MemoryTool(Tool):
                 content=content,
                 memory_type=memory_type,
                 user_id=user_id,
-                agent_id=agent_id,
                 session_id=use_session,
                 importance=importance,
                 metadata=metadata
@@ -197,27 +190,21 @@ class MemoryTool(Tool):
         self,
         query: str,
         user_id: str,
-        agent_id: str,
         session_id: str = None,
         limit: int = 5,
-        memory_type: str = None,
+        memory_types: List[str] = None,
         min_importance: float = 0.1
     ) -> str:
         try:
             if not query:
                 return "❌ 搜索查询不能为空"
 
-            # 知识库搜索 = 不传 session
-            is_knowledge_search = memory_type in ["semantic", "perceptual"]
-            search_session = None if is_knowledge_search else session_id
-
             results = self.memory_manager.retrieve_memories(
                 query=query,
                 limit=limit,
                 user_id=user_id,
-                agent_id=agent_id,
-                session_id=search_session,
-                memory_types=[memory_type] if memory_type else None,
+                session_id=session_id,
+                memory_types=memory_types if memory_types  else None,
                 min_importance=min_importance
             )
 
@@ -400,12 +387,11 @@ class MemoryTool(Tool):
     def _clear_all(
         self,
         user_id: str = "default_user",
-        agent_id: str = "default_agent",
         session_id: str = None
     ) -> str:
         try:
             self.memory_manager.clear_all_memories(
-                user_id=user_id, agent_id=agent_id, session_id=session_id
+                user_id=user_id, session_id=session_id
             )
             return "🧹 已清空当前范围所有记忆"
         except Exception as e:

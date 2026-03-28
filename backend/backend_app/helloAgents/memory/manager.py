@@ -46,26 +46,17 @@ class MemoryManager:
         self,
         content: str,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session",
         memory_type: str = "working",
         importance: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        auto_classify: bool = True
+        metadata: Optional[Dict[str, Any]] = None
     ) -> str:
         """添加记忆（四层隔离标准）
 
         标准规则：
-        - working / episodic：带 user_id + agent_id + session_id
+        - working / episodic：带 user_id  + session_id
         - semantic / perceptual：只带 user_id
         """
-        # 自动分类
-        # if auto_classify:
-        #     memory_type = self._classify_memory_type(content, metadata)
-
-        # 计算重要性
-        if importance is None:
-            importance = self._calculate_importance(content, metadata)
 
         # 创建记忆项
         memory_item = MemoryItem(
@@ -85,7 +76,7 @@ class MemoryManager:
             # ====================== 核心标准 ======================
             if memory_type in ["working", "episodic"]:
                 # 短期记忆：三层隔离
-                return mem.add(memory_item, user_id=user_id, agent_id=agent_id, session_id=session_id)
+                return mem.add(memory_item, user_id=user_id, session_id=session_id)
             else:
                 # 长期知识库：只按用户隔离
                 return mem.add(memory_item)
@@ -99,7 +90,6 @@ class MemoryManager:
         self,
         query: str,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session",
         memory_types: Optional[List[str]] = None,
         limit: int = 10,
@@ -120,12 +110,11 @@ class MemoryManager:
             mem = self.memory_types[mt]
             try:
                 if mt in ["working", "episodic"]:
-                    # 短期：三层过滤
+                    # 短期：2层过滤
                     res = mem.retrieve(
                         query=query,
                         limit=per_type_limit,
                         user_id=user_id,
-                        agent_id=agent_id,
                         session_id=session_id
                     )
                 else:
@@ -149,7 +138,6 @@ class MemoryManager:
         self,
         memory_id: str,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session",
         content: Optional[str] = None,
         importance: Optional[float] = None,
@@ -158,8 +146,8 @@ class MemoryManager:
         """更新记忆（自动按类型处理）"""
         for mt, mem in self.memory_types.items():
             if mt in ["working", "episodic"]:
-                if mem.has_memory(memory_id, user_id, agent_id, session_id):
-                    return mem.update(memory_id, content, importance, metadata, user_id, agent_id, session_id)
+                if mem.has_memory(memory_id, user_id, session_id):
+                    return mem.update(memory_id, content, importance, metadata, user_id, session_id)
             else:
                 if mem.has_memory(memory_id):
                     return mem.update(memory_id, content, importance, metadata)
@@ -173,14 +161,13 @@ class MemoryManager:
         self,
         memory_id: str,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session"
     ) -> bool:
         """删除记忆"""
         for mt, mem in self.memory_types.items():
             if mt in ["working", "episodic"]:
-                if mem.has_memory(memory_id, user_id, agent_id, session_id):
-                    return mem.remove(memory_id, user_id, agent_id, session_id)
+                if mem.has_memory(memory_id, user_id, session_id):
+                    return mem.remove(memory_id, user_id, session_id)
             else:
                 if mem.has_memory(memory_id):
                     return mem.remove(memory_id)
@@ -193,7 +180,6 @@ class MemoryManager:
     def forget_memories(
         self,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session",
         strategy: str = "importance_based",
         threshold: float = 0.1,
@@ -204,7 +190,7 @@ class MemoryManager:
         for mt, mem in self.memory_types.items():
             if hasattr(mem, "forget"):
                 if mt in ["working", "episodic"]:
-                    total += mem.forget(strategy, threshold, max_age_days, user_id, agent_id, session_id)
+                    total += mem.forget(strategy, threshold, max_age_days, user_id, session_id)
                 else:
                     total += mem.forget(strategy, threshold, max_age_days, user_id)
         logger.info(f"用户 {user_id} 遗忘完成，共删除 {total} 条")
@@ -216,7 +202,6 @@ class MemoryManager:
     def consolidate_memories(
         self,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session",
         from_type: str = "working",
         to_type: str = "episodic",
@@ -232,14 +217,14 @@ class MemoryManager:
 
         # 只从当前会话提取
         if from_type == "working":
-            candidates = src.get_all(user_id, agent_id, session_id)
+            candidates = src.get_all(user_id, session_id)
         else:
             candidates = src.get_all(user_id)
 
         for m in candidates:
             if m.importance >= importance_threshold:
                 if from_type == "working":
-                    src.remove(m.id, user_id, agent_id, session_id)
+                    src.remove(m.id, user_id, session_id)
                 else:
                     src.remove(m.id)
 
@@ -248,7 +233,7 @@ class MemoryManager:
                 
                 # 写入目标记忆（按标准）
                 if to_type in ["working", "episodic"]:
-                    dst.add(m, user_id=user_id, agent_id=agent_id, session_id=session_id)
+                    dst.add(m, user_id=user_id, session_id=session_id)
                 else:
                     dst.add(m)
                 count += 1
@@ -262,13 +247,11 @@ class MemoryManager:
     def get_memory_stats(
         self,
         user_id: str,
-        agent_id: str = "default_agent",
         session_id: str = "default_session"
     ) -> Dict[str, Any]:
         """获取记忆统计（支持四层维度）"""
         stats = {
             "user_id": user_id,
-            "agent_id": agent_id,
             "session_id": session_id,
             "enabled_types": list(self.memory_types.keys()),
             "total_memories": 0,
@@ -277,7 +260,7 @@ class MemoryManager:
 
         for mt, mem in self.memory_types.items():
             if mt in ["working", "episodic"]:
-                type_stats = mem.get_stats(user_id, agent_id, session_id)
+                type_stats = mem.get_stats(user_id, session_id)
             else:
                 type_stats = mem.get_stats(user_id)
 
@@ -292,36 +275,16 @@ class MemoryManager:
     def clear_all_memories(
         self,
         user_id: str = None,
-        agent_id: str = None,
         session_id: str = None
     ):
         """清空记忆（四层标准）"""
         for mt, mem in self.memory_types.items():
             if mt in ["working", "episodic"]:
-                mem.clear(user_id, agent_id, session_id)
+                mem.clear(user_id, session_id)
             else:
                 mem.clear(user_id)
-        logger.info(f"已清空记忆 user={user_id} agent={agent_id} session={session_id}")
+        logger.info(f"已清空记忆 user={user_id} session={session_id}")
 
-    # -------------------------------------------------------------------------
-    # 工具方法
-    # -------------------------------------------------------------------------
-    def _classify_memory_type(self, content: str, metadata: Optional[Dict[str, Any]]) -> str:
-        if metadata and metadata.get("type"):
-            return metadata["type"]
-        if self._is_episodic_content(content):
-            return "episodic"
-        elif self._is_semantic_content(content):
-            return "semantic"
-        return "working"
-
-    def _is_episodic_content(self, content: str) -> bool:
-        keywords = ["昨天", "今天", "明天", "上次", "记得", "发生", "经历", "刚才"]
-        return any(k in content for k in keywords)
-
-    def _is_semantic_content(self, content: str) -> bool:
-        keywords = ["定义", "概念", "规则", "知识", "原理", "方法", "意思"]
-        return any(k in content for k in keywords)
 
     def _calculate_importance(self, content: str, metadata: Optional[Dict[str, Any]]) -> float:
         importance = 0.5
