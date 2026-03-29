@@ -46,9 +46,9 @@ class AsyncToolExecutor:
 
             # 包装任务，加入【开始执行】打印
             async def wrapped_task(idx, t_name, data):
-                print(f"➡️ 任务 {idx+1} 开始执行 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
+                # print(f"➡️ 任务 {idx+1} 开始执行 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
                 res = await self.execute_tool_async(t_name, data)
-                print(f"✅ 任务 {idx+1} 执行完成 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
+                # print(f"✅ 任务 {idx+1} 执行完成 | 工具：{t_name} | 时间：{time.strftime('%H:%M:%S')}")
                 return res
 
             async_tasks.append(wrapped_task(i, tool_name, input_data))
@@ -59,7 +59,7 @@ class AsyncToolExecutor:
         # ======================
         results_raw = await asyncio.gather(*async_tasks, return_exceptions=True)
 
-        print(f"\n🎉 全部并行执行完成 | 结束时间：{time.strftime('%H:%M:%S')}")
+        # print(f"\n🎉 全部并行执行完成 | 结束时间：{time.strftime('%H:%M:%S')}")
 
         # 组装结果
         results = []

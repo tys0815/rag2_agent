@@ -50,6 +50,9 @@ DEFAULT_HYBRID_REACT_PROMPT = """你是一个具备深度推理和行动能力�
 - 只有当你确信有足够信息回答问题时，才停止调用工具并给出最终答案。
 - 如果工具返回错误或信息不足，请在下一次思考中分析原因并调整策略。
 
+## 用户的记忆
+{memory}
+
 ## 当前任务
 **Question:** {question}
 
@@ -97,7 +100,7 @@ class ReActAgent(Agent):
             # ======================
             # ✅ 关键：memory 不暴露给 LLM
             # ======================
-            if tool.name == "memory":
+            if tool.name == "memory" or tool.name == "rag":
                 continue
 
             properties = {}
@@ -156,12 +159,13 @@ class ReActAgent(Agent):
         self.tool_registry.register_tool(tool)
         self._tool_schemas = self._build_tool_schemas()
 
-    def _get_system_prompt(self, question: str, history_str: str) -> str:
+    def _get_system_prompt(self, question: str, history_str: str, memory: str) -> str:
         tools_desc = self.tool_registry.get_tools_description()
         return self.prompt_template.format(
             tools=tools_desc,
             question=question,
-            history=history_str
+            history=history_str,
+            memory=memory
         )
 
     def _convert_params(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -224,7 +228,7 @@ class ReActAgent(Agent):
             results = await run_parallel_tools(self.tool_registry, [task])
             memory_result = results[0]["result"] if results else ""
 
-            return f"【用户长期记忆】\n{memory_result}" if memory_result else "无用户记忆"
+            return f"\n{memory_result}" if memory_result else "无用户记忆"
 
         except Exception:
             return "无用户记忆"
@@ -258,7 +262,8 @@ class ReActAgent(Agent):
                     "content": f"用户：{user_input}",
                     "memory_type": "working",
                     "user_id": user_id,
-                    "session_id": session_id
+                    "session_id": session_id,
+                    "importance": 0.3
                 }
             })
             tasks.append({
@@ -276,33 +281,42 @@ class ReActAgent(Agent):
             # ------------------------------
             # 任务2+3：LLM一次抽取 + 保存 semantic + episodic
             # ------------------------------
-            mem_data = self._extract_all_memories_in_one_llm(user_input, final_answer)
-
-            if mem_data["should_semantic"] and mem_data["semantic_content"]:
-                tasks.append({
+            tasks.append({
                     "tool_name": "memory",
                     "input_data": {
                         "action": "add",
-                        "content": mem_data["semantic_content"],
+                        "content": user_input,
                         "memory_type": "semantic",
                         "user_id": user_id,
                         "session_id": None,
                         "importance": 0.8,  # 语义记忆重要性较高
                     }
                 })
+                
 
-            if mem_data["should_episodic"] and mem_data["episodic_content"]:
-                tasks.append({
+            tasks.append({
                     "tool_name": "memory",
                     "input_data": {
                         "action": "add",
-                        "content": mem_data["episodic_content"],
+                        "content": user_input,
                         "memory_type": "episodic",
                         "user_id": user_id,
                         "session_id": session_id,
                         "importance": 0.5,  # 事件记忆重要性较高
                     }
                 })
+            tasks.append({
+                    "tool_name": "memory",
+                    "input_data": {
+                        "action": "add",
+                        "content": final_answer,
+                        "memory_type": "episodic",
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "importance": 0.5,  # 事件记忆重要性较高
+                    }
+                })
+                
 
             # ------------------------------
             # 🔥 真正异步并行保存（用你项目统一执行器）
@@ -313,56 +327,6 @@ class ReActAgent(Agent):
         except Exception:
             import traceback
             traceback.print_exc()
-
-    def _extract_all_memories_in_one_llm(self, user_input: str, final_answer: str) -> Dict[str, Any]:
-        """
-        一次LLM输出：
-        - should_semantic: bool
-        - semantic_content: str
-        - should_episodic: bool
-        - episodic_content: str
-        完全结构化，无多余调用
-        """
-        prompt = f"""
-    你是用户记忆抽取引擎，**只输出合法JSON**，不要其他任何文字。
-
-    任务：从对话中抽取四层记忆（perceptual由系统判断）。
-
-    输出JSON格式：
-    {{
-    "should_semantic": true/false,
-    "semantic_content": "提取的长期偏好/身份/规则，200字内",
-    "should_episodic": true/false,
-    "episodic_content": "本次任务事件总结，180字内"
-    }}
-
-    规则：
-    - semantic：用户偏好、习惯、身份、长期指令、事实知识 → 才抽取
-    - episodic：形成完整任务闭环、有明确结果 → 才抽取
-    - 内容简洁、第三人称、客观、无冗余
-
-    用户输入：{user_input}
-    助手回答：{final_answer}
-    JSON输出：
-    """.strip()
-
-        try:
-            result = self.llm.invoke(prompt, temperature=0.2, max_tokens=350).strip()
-            data = json.loads(result)
-            return {
-                "should_semantic": bool(data.get("should_semantic", False)),
-                "semantic_content": str(data.get("semantic_content", ""))[:200],
-                "should_episodic": bool(data.get("should_episodic", False)),
-                "episodic_content": str(data.get("episodic_content", ""))[:180],
-            }
-        except Exception:
-            return {
-                "should_semantic": False,
-                "semantic_content": "",
-                "should_episodic": False,
-                "episodic_content": ""
-            }
-
 
     # =========================================================================
     # ReAct 主运行流程
@@ -379,11 +343,11 @@ class ReActAgent(Agent):
         # ======================
         long_memory = await self._get_user_long_term_memory(input_text, **kwargs)
         history_str = self._build_react_history_str(messages)
-        system_prompt = self._get_system_prompt(input_text, history_str)
-        system_prompt += f"\n\n## 用户长期记忆（自动加载）\n{long_memory}"
+        system_prompt = self._get_system_prompt(input_text, history_str, long_memory)
         while current_step < self.max_steps:
             current_step += 1
             print(f"\n--- 第 {current_step} 步 ---")
+            print(f"\n--- 系统提示 ---\n{system_prompt} ---")
 
             if current_step == 1:
                 messages = [
@@ -413,7 +377,6 @@ class ReActAgent(Agent):
                 break
 
             if content:
-                print(f"🧠 [Thought]: {content.strip()}")
                 msg_payload = {"role": "assistant", "content": content}
                 if tool_calls:
                     msg_payload["tool_calls"] = [
@@ -430,10 +393,8 @@ class ReActAgent(Agent):
 
             if not tool_calls:
                 final_answer = content
-                print(f"🎉 [Final Answer]: {final_answer}")
                 break
 
-            print(f"🛠️ 检测到 {len(tool_calls)} 个工具调用")
             parallel_tasks = []
             tool_call_map = {}
             for idx, tc in enumerate(tool_calls):
@@ -444,8 +405,8 @@ class ReActAgent(Agent):
                     args = {}
                 args['user_id'] = kwargs.get("user_id")
                 args['session_id'] = kwargs.get("session_id")
-                args['action'] = "search"  # 统一加个 action，方便工具区分查询/添加等操作
-                args['query'] = "入职流程"  # 兼容老版本工具参数
+                # args['action'] = "search"  # 统一加个 action，方便工具区分查询/添加等操作
+                # args['query'] = "入职流程"  # 兼容老版本工具参数
                 typed_args = self._convert_params(func_name, args)
                 
                 parallel_tasks.append({
@@ -465,7 +426,6 @@ class ReActAgent(Agent):
                 tc = tool_call_map[idx]
                 func_name = result["tool_name"]
                 observation = result["result"]
-                print(f"   <- [{result['status'].upper()}] {func_name}: {str(observation)[:200]}...")
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -488,7 +448,7 @@ class ReActAgent(Agent):
             # 可选：不等待，但捕获任务内部异常
             def _done_callback(t):
                 try:
-                    t.result()
+                    task.result()
                 except Exception as e:
                     print(f"⚠️ 后台记忆任务异常: {e}")
 

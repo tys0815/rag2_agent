@@ -155,69 +155,82 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
             saved_files.append(res)
 
     # ============================
-    # ✅ 记忆存储开始（我补充的）
+    # ✅ 企业级精简版：只存 1 条总结记忆（包含所有文件路径+状态）
     # ============================
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # 1. 记录【上传成功】记忆
-    for file in saved_files:
-        try:
-            memory_tool.run({
-                "action": "add",
-                "user_id": user_id,
-                "memory_type": "semantic",  # 知识类记忆
-                "content": f"【文件上传成功】{now} | 用户{user_id} 上传文件「{file['filename']}」已存入知识库",
-                "file_path": file["file_path"]
-            })
-        except Exception as e:
-            logger.warning(f"记忆保存失败: {e}")
-
-    # 2. 记录【重复文件】记忆
-    for dup in duplicate_files:
-        try:
-            memory_tool.run({
-                "action": "add",
-                "user_id": user_id,
-                "memory_type": "working",
-                "content": f"【文件重复】{now} | 文件「{dup['filename']}」已存在，自动跳过",
-                "file_path": dup["file_path"]
-            })
-        except:
-            pass
-
-    # 3. 记录【上传失败】记忆
-    for err in save_errors:
-        memory_tool.run({
-            "action": "add",
-            "user_id": user_id,
-            "memory_type": "perceptual",
-            "content": f"【上传失败】{now} | 文件「{err['filename']}」保存失败：{err['error']}",
-            "file_path": ""
-        })
-
-    # 4. 记录【本次上传总结】记忆（非常有用）
     total = len(files)
     success_cnt = len(saved_files)
     dup_cnt = len(duplicate_files)
     fail_cnt = len(save_errors)
 
-    summary_content = (
-        f"【上传总结】{now} | 用户{user_id} 共上传 {total} 个文件\n"
-        f"✅ 成功入库：{success_cnt} 个\n"
-        f"⚠️ 重复跳过：{dup_cnt} 个\n"
-        f"❌ 上传失败：{fail_cnt} 个"
-    )
+    # 构建清晰的文件清单
+    success_files = "\n".join([f"- {f['filename']} | 路径：{f['file_path']}" for f in saved_files])
+    dup_files_list = "\n".join([f"- {d['filename']}" for d in duplicate_files])
+    err_files_list = "\n".join([f"- {e['filename']} | 原因：{e['error']}" for e in save_errors])
 
-    try:
-        memory_tool.run({
-            "action": "add",
-            "user_id": user_id,
-            "memory_type": "episodic",  # 情景/事件记忆
-            "content": summary_content,
-            "file_path": ""
-        })
-    except:
-        pass
+
+    # 全部记忆 → 丢进 AsyncToolExecutor 并行后台执行
+    # ============================
+    async def save_all_memories_in_background():
+        try:
+            tasks = []
+
+            # --------------------------
+            # 1)  episodic 上传总结记忆
+            # --------------------------
+            summary_content = f"""【文件上传总结】{now} | 用户：{user_id}
+    总文件数：{total}
+    ✅ 上传成功：{success_cnt} 个
+    {success_files if success_files else '无'}
+
+    ⚠️ 重复文件：{dup_cnt} 个
+    {dup_files_list if dup_files_list else '无'}
+
+    ❌ 上传失败：{fail_cnt} 个
+    {err_files_list if err_files_list else '无'}
+    """
+            tasks.append({
+                "tool_name": "memory",
+                "input_data": {
+                    "action": "add",
+                    "user_id": user_id,
+                    "memory_type": "episodic",
+                    "content": summary_content.strip(),
+                    "importance": 0.8,
+                    "session_id": None
+                }
+            })
+
+            # --------------------------
+            # 2)  perceptual 多模态文件记忆
+            # --------------------------
+            for file in saved_files:
+                tasks.append({
+                    "tool_name": "memory",
+                    "input_data": {
+                        "action": "add",
+                        "user_id": user_id,
+                        "memory_type": "perceptual",
+                        "content": f"【多模态文件】{file['filename']} | 路径：{file['file_path']}",
+                        "file_path": file["file_path"],
+                        "importance": 0.7,
+                        "session_id": None
+                    }
+                })
+
+            # --------------------------
+            # 🔥 并行执行所有记忆保存（完全异步）
+            # --------------------------
+            executor = AsyncToolExecutor(global_registry, max_workers=5)
+            await executor.execute_tools_parallel(tasks)
+
+        except Exception as e:
+            logger.warning(f"后台记忆保存任务失败: {e}")
+
+    # --------------------------
+    # 提交后台 → 主流程完全不等待
+    # --------------------------
+    asyncio.create_task(save_all_memories_in_background())
 
     # ============================
     # ✅ 记忆存储结束

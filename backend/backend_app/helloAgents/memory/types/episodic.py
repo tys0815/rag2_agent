@@ -4,7 +4,7 @@
 - 时间序列组织
 - 上下文丰富的记忆
 - 模式识别能力
-- 四层隔离：user_id → agent_id → session_id → episode
+- 四层隔离：user_id → session_id → episode
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -27,7 +27,6 @@ class Episode:
         self,
         episode_id: str,
         user_id: str,
-        agent_id: str,       # 新增：功能/助手ID
         session_id: str,
         timestamp: datetime,
         content: str,
@@ -37,7 +36,6 @@ class Episode:
     ):
         self.episode_id = episode_id
         self.user_id = user_id
-        self.agent_id = agent_id          # 新增
         self.session_id = session_id
         self.timestamp = timestamp
         self.content = content
@@ -50,7 +48,7 @@ class EpisodicMemory(BaseMemory):
     
     特点：
     - 存储具体的交互事件（对话历史、操作行为）
-    - 四层完全隔离：用户 → 助手 → 会话 → 事件
+    - 四层完全隔离：用户 → 会话 → 事件
     - 按时间序列组织
     - 支持模式识别和回溯
     - 支持多租户、多应用、多助手隔离
@@ -84,40 +82,25 @@ class EpisodicMemory(BaseMemory):
             url=qdrant_url,
             api_key=qdrant_api_key,
             collection_name=os.getenv("QDRANT_COLLECTION", "hello_agents_vectors"),
-            vector_size=get_dimension(getattr(self.embedder, 'dimension', 384)),
+            vector_size=get_dimension(getattr(self.embedder, 'dimension', 512)),
             distance=os.getenv("QDRANT_DISTANCE", "cosine")
         )
-    
-    def add(self, memory_item: MemoryItem, user_id: str = None, agent_id: str = "default_agent", session_id: str = "default_session") -> str:
+
+    def add(self, memory_item: MemoryItem, user_id: str = None, session_id: str = None) -> str:
         """添加情景记忆（四层隔离）"""
-        user_id = user_id or memory_item.user_id
-        session_id = memory_item.metadata.get("session_id", session_id)
-        agent_id = memory_item.metadata.get("agent_id", agent_id)  # 优先从元数据取
-        context = memory_item.metadata.get("context", {})
-        outcome = memory_item.metadata.get("outcome")
-        participants = memory_item.metadata.get("participants", [])
-        tags = memory_item.metadata.get("tags", [])
         
         # 创建情景（四层）
         episode = Episode(
             episode_id=memory_item.id,
             user_id=user_id,
-            agent_id=agent_id,
             session_id=session_id,
             timestamp=memory_item.timestamp,
             content=memory_item.content,
-            context=context,
-            outcome=outcome,
+            context="",
+            outcome="",
             importance=memory_item.importance
         )
         self.episodes.append(episode)
-
-        # 初始化 agent → session 结构
-        if agent_id not in self.sessions:
-            self.sessions[agent_id] = {}
-        if session_id not in self.sessions[agent_id]:
-            self.sessions[agent_id][session_id] = []
-        self.sessions[agent_id][session_id].append(episode.episode_id)
 
         # 1) 权威存储（SQLite）
         ts_int = int(memory_item.timestamp.timestamp())
@@ -128,17 +111,10 @@ class EpisodicMemory(BaseMemory):
             memory_type="episodic",
             timestamp=ts_int,
             importance=memory_item.importance,
-            properties={
-                "agent_id": agent_id,          # 存储agent_id
-                "session_id": session_id,
-                "context": context,
-                "outcome": outcome,
-                "participants": participants,
-                "tags": tags
-            }
+            properties={}
         )
 
-        # 2) 向量索引（Qdrant）
+        # 2) 向量索引（Qdrant
         try:
             embedding = self.embedder.encode(memory_item.content)
             if hasattr(embedding, "tolist"):
@@ -148,11 +124,10 @@ class EpisodicMemory(BaseMemory):
                 metadata=[{
                     "memory_id": memory_item.id,
                     "user_id": user_id,
-                    "agent_id": agent_id,      # 向量库带上agent_id
                     "memory_type": "episodic",
                     "importance": memory_item.importance,
-                    "session_id": session_id,
-                    "content": memory_item.content
+                    "content": memory_item.content,
+                    "session_id": session_id
                 }],
                 ids=[memory_item.id]
             )
@@ -255,7 +230,6 @@ class EpisodicMemory(BaseMemory):
                         timestamp=ep.timestamp,
                         importance=ep.importance,
                         metadata={
-                            "agent_id": ep.agent_id,
                             "session_id": ep.session_id,
                             "context": ep.context,
                             "outcome": ep.outcome,
@@ -273,13 +247,12 @@ class EpisodicMemory(BaseMemory):
         importance: float = None,
         metadata: Dict[str, Any] = None,
         user_id: str = None,
-        agent_id: str = None,
         session_id: str = None
     ) -> bool:
         updated = False
         for episode in self.episodes:
             if episode.episode_id == memory_id:
-                if agent_id and episode.agent_id != agent_id:
+                if user_id and episode.user_id != user_id:
                     continue
                 if session_id and episode.session_id != session_id:
                     continue
@@ -302,7 +275,6 @@ class EpisodicMemory(BaseMemory):
                 payload = {
                     "memory_id": memory_id,
                     "user_id": doc["user_id"],
-                    "agent_id": doc["properties"]["agent_id"],
                     "memory_type": "episodic",
                     "session_id": doc["properties"]["session_id"],
                     "importance": doc.get("importance", 0.5),
@@ -313,19 +285,19 @@ class EpisodicMemory(BaseMemory):
                 pass
         return updated or doc_updated
     
-    def remove(self, memory_id: str, user_id: str = None, agent_id: str = None, session_id: str = None) -> bool:
+    def remove(self, memory_id: str, user_id: str = None, session_id: str = None) -> bool:
         removed = False
         for i, episode in enumerate(self.episodes):
             if episode.episode_id == memory_id:
-                if agent_id and episode.agent_id != agent_id:
+                if user_id and episode.user_id != user_id:
                     continue
                 if session_id and episode.session_id != session_id:
                     continue
                 ep = self.episodes.pop(i)
                 try:
-                    self.sessions[ep.agent_id][ep.session_id].remove(memory_id)
-                    if not self.sessions[ep.agent_id][ep.session_id]:
-                        del self.sessions[ep.agent_id][ep.session_id]
+                    self.sessions[ep.session_id].remove(memory_id)
+                    if not self.sessions[ep.session_id]:
+                        del self.sessions[ep.session_id]
                 except:
                     pass
                 removed = True
@@ -338,10 +310,10 @@ class EpisodicMemory(BaseMemory):
             pass
         return removed or doc_del
     
-    def has_memory(self, memory_id: str, user_id=None, agent_id=None, session_id=None) -> bool:
+    def has_memory(self, memory_id: str, user_id=None, session_id=None) -> bool:
         for ep in self.episodes:
             if ep.episode_id == memory_id:
-                if agent_id and ep.agent_id != agent_id:
+                if user_id and ep.user_id != user_id:
                     continue
                 if session_id and ep.session_id != session_id:
                     continue
@@ -352,8 +324,6 @@ class EpisodicMemory(BaseMemory):
         to_del = []
         for ep in self.episodes:
             if user_id and ep.user_id != user_id:
-                continue
-            if agent_id and ep.agent_id != agent_id:
                 continue
             if session_id and ep.session_id != session_id:
                 continue
@@ -367,13 +337,11 @@ class EpisodicMemory(BaseMemory):
         elif agent_id:
             self.sessions.pop(agent_id, None)
     
-    def forget(self, strategy="importance_based", threshold=0.1, max_age_days=30, user_id=None, agent_id=None, session_id=None) -> int:
+    def forget(self, strategy="importance_based", threshold=0.1, max_age_days=30, user_id=None, session_id=None) -> int:
         now = datetime.now()
         to_del = []
         for ep in self.episodes:
             if user_id and ep.user_id != user_id:
-                continue
-            if agent_id and ep.agent_id != agent_id:
                 continue
             if session_id and ep.session_id != session_id:
                 continue
@@ -392,13 +360,13 @@ class EpisodicMemory(BaseMemory):
 
         cnt = 0
         for mid in list(set(to_del)):
-            if self.remove(mid, agent_id=agent_id, session_id=session_id):
+            if self.remove(mid, user_id=user_id, session_id=session_id):
                 cnt += 1
         return cnt
 
-    def get_all(self, user_id=None, agent_id=None, session_id=None) -> List[MemoryItem]:
+    def get_all(self, user_id=None, session_id=None) -> List[MemoryItem]:
         items = []
-        for ep in self._filter_episodes(user_id, agent_id, session_id):
+        for ep in self._filter_episodes(user_id, session_id):
             items.append(MemoryItem(
                 id=ep.episode_id,
                 content=ep.content,
@@ -407,7 +375,6 @@ class EpisodicMemory(BaseMemory):
                 timestamp=ep.timestamp,
                 importance=ep.importance,
                 metadata={
-                    "agent_id": ep.agent_id,
                     "session_id": ep.session_id,
                     "context": ep.context,
                     "outcome": ep.outcome

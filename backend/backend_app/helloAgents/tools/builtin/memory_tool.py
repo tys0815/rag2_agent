@@ -29,8 +29,8 @@ class MemoryTool(Tool):
         )
 
     def run(self, parameters: Dict[str, Any]) -> str:
-        if not self.validate_parameters(parameters):
-            return "❌ 参数验证失败：缺少必需的参数"
+        # if not self.validate_parameters(parameters):
+        #     return "❌ 参数验证失败：缺少必需的参数"
 
         action = parameters.get("action")
 
@@ -162,6 +162,9 @@ class MemoryTool(Tool):
             if file_path and memory_type == "perceptual":
                 metadata["modality"] = modality or self._infer_modality(file_path)
                 metadata["raw_data"] = file_path
+
+            if memory_type == "perceptual" and metadata["modality"] == "text":
+                return "❌ 感知记忆要求提供非文本文件路径"
 
             # 会话信息
             metadata.update({
