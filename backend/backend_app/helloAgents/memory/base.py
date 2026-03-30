@@ -17,6 +17,8 @@ class MemoryItem(BaseModel):
     content: str
     memory_type: str
     user_id: str
+    session_id: str = None
+    role: str = None
     timestamp: datetime
     importance: float = 0.5
     metadata: Dict[str, Any] = {}

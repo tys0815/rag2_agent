@@ -124,11 +124,13 @@ class ToolRegistry:
 
         # Tool对象描述
         for tool in self._tools.values():
-            descriptions.append(f"- {tool.name}: {tool.description}")
+            if tool.name != "memory":
+                descriptions.append(f"- {tool.name}: {tool.description}")
 
         # 函数工具描述
         for name, info in self._functions.items():
-            descriptions.append(f"{name}:{info['description']}")
+            if name != "memory":
+                descriptions.append(f"{name}:{info['description']}")
 
         return "\n".join(descriptions) if descriptions else "暂无可用工具"
 

@@ -135,7 +135,7 @@ const sendMessage = async () => {
       text: newMessage,
       user_id: 'uid_12345',
       agent_id: 'universal_assistant',
-      session_id: `universal_session_${Date.now()}`,
+      session_id: `universal_session_20260331`,
       enable_memory: true,
       enable_rag: true,
       max_context_length: 2000,

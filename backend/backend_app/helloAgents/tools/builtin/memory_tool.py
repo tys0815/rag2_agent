@@ -4,6 +4,7 @@
 
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from collections import defaultdict
 
 from ..base import Tool, ToolParameter, tool_action
 from ...memory import MemoryManager, MemoryConfig
@@ -45,7 +46,9 @@ class MemoryTool(Tool):
                 file_path=parameters.get("file_path"),
                 modality=parameters.get("modality"),
                 user_id=user_id,
-                session_id=session_id
+                session_id=session_id,
+                user_content=parameters.get("user_content", ""),
+                assistant_content=parameters.get("assistant_content", "")
             )
         elif action == "search":
             return self._search_memory(
@@ -107,33 +110,34 @@ class MemoryTool(Tool):
 
     def get_parameters(self) -> List[ToolParameter]:
         """工具参数（四层记忆架构 · 仅查询）"""
-        return [
-            ToolParameter(
-                name="action",
-                type="string",
-                required=True,
-                description="【记忆操作】仅支持 search：检索用户的历史记忆、上下文、偏好、知识",
-                enum=["search"]
-            ),
-            ToolParameter(
-                name="query",
-                type="string",
-                required=True,
-                description="【必填】检索关键词，用于查找相关记忆内容"
-            ),
-            ToolParameter(
-                name="memory_type",
-                type="string",
-                required=False,
-                default="working",
-                description="""四层记忆类型（自动选择即可）：
-    - working：工作记忆｜当前对话上下文、短期信息，会话级、临时、自动清理
-    - episodic：情景记忆｜历史交互事件、学习经历、长期对话记录
-    - semantic：语义记忆｜抽象知识、用户偏好、规则、知识点、长期知识体系
-    - perceptual：感知记忆｜图片、音频、文件、多模态信息、上传记录""",
-                enum=["working", "episodic", "semantic", "perceptual"]
-            )
-        ]
+        return []
+    #     return [
+    #         ToolParameter(
+    #             name="action",
+    #             type="string",
+    #             required=True,
+    #             description="【记忆操作】仅支持 search：检索用户的历史记忆、上下文、偏好、知识",
+    #             enum=["search"]
+    #         ),
+    #         ToolParameter(
+    #             name="query",
+    #             type="string",
+    #             required=True,
+    #             description="【必填】检索关键词，用于查找相关记忆内容"
+    #         ),
+    #         ToolParameter(
+    #             name="memory_type",
+    #             type="string",
+    #             required=False,
+    #             default="working",
+    #             description="""四层记忆类型（自动选择即可）：
+    # - working：工作记忆｜当前对话上下文、短期信息，会话级、临时、自动清理
+    # - episodic：情景记忆｜历史交互事件、学习经历、长期对话记录
+    # - semantic：语义记忆｜抽象知识、用户偏好、规则、知识点、长期知识体系
+    # - perceptual：感知记忆｜图片、音频、文件、多模态信息、上传记录""",
+    #             enum=["working", "episodic", "semantic", "perceptual"]
+    #         )
+    #     ]
 
     # -------------------------------------------------------------------------
     # 核心：所有方法都必须接收 user_id, agent_id, session_id
@@ -147,7 +151,8 @@ class MemoryTool(Tool):
         file_path: str = None,
         modality: str = None,
         user_id: str = "default_user",
-        session_id: str = None
+        session_id: str = None,
+        **kwargs
     ) -> str:
         try:
             metadata = {}
@@ -179,7 +184,8 @@ class MemoryTool(Tool):
                 user_id=user_id,
                 session_id=use_session,
                 importance=importance,
-                metadata=metadata
+                metadata=metadata,
+                **kwargs
             )
 
             scope = "全局知识库" if is_knowledge else f"会话{use_session}"
@@ -215,18 +221,32 @@ class MemoryTool(Tool):
                 return f"🔍 未找到与 '{query}' 相关的记忆"
 
             # 格式化结果
-            formatted_results = [f"🔍 找到 {len(results)} 条相关记忆:"]
+            # 1. 按记忆类型分组
+            grouped = defaultdict(list)
             type_map = {
-                "working": "工作记忆", "episodic": "情景记忆",
-                "semantic": "语义记忆", "perceptual": "感知记忆"
+                "working": "工作记忆",
+                "semantic": "语义记忆",
+                "episodic": "情景记忆",
+                "perceptual": "感知记忆"
             }
 
-            for i, m in enumerate(results, 1):
+            for m in results:
                 type_label = type_map.get(m.memory_type, m.memory_type)
-                preview = m.content[:80] + "..." if len(m.content) > 80 else m.content
-                formatted_results.append(
-                    f"{i}. [{type_label}] {preview} (重要性: {m.importance:.2f})"
-                )
+                grouped[type_label].append(m.content.strip())
+
+            formatted_results = []
+
+            # 2. 按你要的格式输出
+            for type_label, items in grouped.items():
+                if not items:
+                    continue
+                formatted_results.append(f"【{type_label}】")
+                for idx, content in enumerate(items, 1):
+                    formatted_results.append(f"{idx}. {content}")
+
+            # 如果没有记忆
+            if not formatted_results:
+                formatted_results = ["暂无相关记忆"]
 
             return "\n".join(formatted_results)
 

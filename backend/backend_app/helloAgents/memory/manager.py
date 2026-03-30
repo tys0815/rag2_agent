@@ -49,7 +49,8 @@ class MemoryManager:
         session_id: str = "default_session",
         memory_type: str = "working",
         importance: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> str:
         """添加记忆（四层隔离标准）
 
@@ -76,7 +77,7 @@ class MemoryManager:
             # ====================== 核心标准 ======================
             if memory_type in ["working", "episodic"]:
                 # 短期记忆：三层隔离
-                return mem.add(memory_item, user_id=user_id, session_id=session_id)
+                return mem.add(memory_item, session_id=session_id, **kwargs)
             else:
                 # 长期知识库：只按用户隔离
                 return mem.add(memory_item)
@@ -109,27 +110,18 @@ class MemoryManager:
 
             mem = self.memory_types[mt]
             try:
-                if mt in ["working", "episodic"]:
-                    # 短期：2层过滤
-                    res = mem.retrieve(
-                        query=query,
-                        limit=per_type_limit,
-                        user_id=user_id,
-                        session_id=session_id
-                    )
-                else:
-                    # 长期：只按用户
-                    res = mem.retrieve(
-                        query=query,
-                        limit=per_type_limit,
-                        user_id=user_id
-                    )
+                res = mem.retrieve(
+                    query=query,
+                    limit=per_type_limit,
+                    user_id=user_id,
+                    session_id=session_id
+                )
                 all_results.extend(res)
             except Exception as e:
                 logger.warning(f"检索 {mt} 出错: {e}")
 
         all_results.sort(key=lambda x: x.importance, reverse=True)
-        return all_results[:limit]
+        return all_results
 
     # -------------------------------------------------------------------------
     # 更新记忆
