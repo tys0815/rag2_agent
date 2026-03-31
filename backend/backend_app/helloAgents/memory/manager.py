@@ -67,7 +67,8 @@ class MemoryManager:
             user_id=user_id,
             timestamp=datetime.now(),
             importance=importance,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            role=kwargs.get("role", "")
         )
 
         # 添加到对应记忆库（严格按类型传参）

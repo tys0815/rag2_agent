@@ -47,10 +47,23 @@ class WorkingMemory(BaseMemory):
     # ------------------------------
     def add(self, item: MemoryItem, session_id: str = None, **kwargs):
         """保存一轮对话：用户问题 + AI回答"""
-        
+        history = []
         # 1. 读取历史
-        history: List[MemoryItem] = self.retrieve(user_id=item.user_id, session_id=session_id)
-
+        historyList: List[MemoryItem] = self.retrieve(user_id=item.user_id, session_id=session_id)
+        if historyList:
+            for item in historyList:
+                item_dict = {
+                    "id": item.id,
+                    "content": kwargs.get("user_content", ""),
+                    "memory_type": "working",
+                    "user_id": item.user_id,
+                    "timestamp": item.timestamp.isoformat(),
+                    "importance": item.importance,
+                    "role": "user",
+                    "session_id": session_id,
+                    "metadata": item.metadata
+                }
+                history.append(item_dict) 
         # 2. 添加新对话
         user_item = {
             "id": item.id,

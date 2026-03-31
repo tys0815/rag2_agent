@@ -48,7 +48,8 @@ class MemoryTool(Tool):
                 user_id=user_id,
                 session_id=session_id,
                 user_content=parameters.get("user_content", ""),
-                assistant_content=parameters.get("assistant_content", "")
+                assistant_content=parameters.get("assistant_content", ""),
+                role = parameters.get("role", "")
             )
         elif action == "search":
             return self._search_memory(

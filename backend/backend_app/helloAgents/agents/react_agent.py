@@ -194,7 +194,7 @@ class ReActAgent(Agent):
     # =========================================================================
     # 四层记忆自动保存
     # =========================================================================
-    async def _auto_save_all_memories(self, user_input: str, final_answer: str, **kwargs):
+    async def _auto_save_all_memories(self, user_input: str, final_answer: str, system_prompt: str, **kwargs):
         try:
             memory_tool: MemoryTool = self.tool_registry.get_tool("memory")
             if not memory_tool:
@@ -236,6 +236,7 @@ class ReActAgent(Agent):
                 "tool_name": "memory",
                 "input_data": {
                     "action": "add",
+                    "role": "user",
                     "content": user_input,
                     "memory_type": "episodic",
                     "user_id": kwargs.get("user_id"),
@@ -247,6 +248,7 @@ class ReActAgent(Agent):
                 "tool_name": "memory",
                 "input_data": {
                     "action": "add",
+                    "role": "assistant",
                     "content": final_answer,
                     "memory_type": "episodic",
                     "user_id": kwargs.get("user_id"),
@@ -255,10 +257,70 @@ class ReActAgent(Agent):
                 }
             })
 
+            tasks.append({
+                "tool_name": "memory",
+                "input_data": {
+                    "action": "add",
+                    "role": "observation",
+                    "content": system_prompt,
+                    "memory_type": "episodic",
+                    "user_id": kwargs.get("user_id"),
+                    "session_id": kwargs.get("session_id"),
+                    "importance": 0.5
+                }
+            })
+
+            summary = self._extract_summary_by_llm(user_input, final_answer, **kwargs)
+            if summary:
+                tasks.append({
+                    "tool_name": "memory",
+                    "input_data": {
+                        "action": "add",
+                        "role": "summary",
+                        "content": summary,
+                        "memory_type": "episodic",
+                        "user_id": kwargs.get("user_id"),
+                        "session_id": kwargs.get("session_id"),
+                        "importance": 0.5
+                    }
+                })
+
+
             await executor.execute_tools_parallel(tasks)
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def _extract_summary_by_llm(self, user_input: str, final_answer: str, **kwargs) -> str:
+        """
+        让 LLM 根据用户问题 + 助手回复 提取核心摘要，用于精简记忆存储
+        """
+        try:
+            # 构造简洁的摘要提取提示词
+            prompt = f"""
+            请你对以下【用户问题】和【助手回复】进行精简摘要提取：
+            要求：
+            1. 只保留核心信息，不超过50字
+            2. 语言简洁、客观、通顺
+            3. 直接输出摘要，不要额外解释
+            
+            用户问题：{user_input}
+            助手回复：{final_answer}
+            摘要：
+            """
+            
+            # 调用你的 LLM 接口（根据你项目的实际 LLM 调用方式修改）
+            # 这里是通用示例，你可以替换成项目真实调用方法
+            messages = [{"role": "user", "content": prompt}]
+            summary = self.llm.invoke(messages)
+
+            # 清理空白字符
+            summary = summary.strip()
+            return summary if summary else ""
+        
+        except Exception as e:
+            print(f"LLM 提取摘要失败：{str(e)}")
+            return ""
 
     # =========================================================================
     # ReAct 主运行流程（企业级最终版）
@@ -267,11 +329,10 @@ class ReActAgent(Agent):
         current_step = 0
         final_answer = ""
         react_trace = []  # 仅用于构建执行历史，不发给 LLM ✅
-
+        system_prompt = ""
         print(f"\n🤖 {self.name} 开始处理：{input_text}")
         memory = await self._get_user_long_term_memory(input_text, **kwargs)
-        tools_desc = self.tool_registry.get_tools_description()
-
+        tools_desc = self.tool_registry.get_tools_description() 
         while current_step < self.max_steps:
             current_step += 1
             print(f"\n--- 第 {current_step} 步 ---")
@@ -303,6 +364,18 @@ class ReActAgent(Agent):
                 tool_calls = assistant_message.tool_calls or []
             except Exception as e:
                 print(f"❌ LLM 调用失败：{e}")
+                assistant_entry = {
+                    "role": "assistant",
+                    "content": f"LLM 调用失败：{str(e)}"
+                }
+                react_trace.append(assistant_entry)
+                history_str = self._build_react_history_str(react_trace)
+                system_prompt = self.prompt_template.format(
+                    tools=tools_desc,
+                    question=input_text,
+                    history=history_str,
+                    memory=memory
+                )
                 break
 
             # 把思考加入轨迹（用于下一轮执行历史）
@@ -329,6 +402,13 @@ class ReActAgent(Agent):
             # 无工具调用 = 结束
             if not tool_calls:
                 final_answer = content
+                history_str = self._build_react_history_str(react_trace)
+                system_prompt = self.prompt_template.format(
+                    tools=tools_desc,
+                    question=input_text,
+                    history=history_str,
+                    memory=memory
+                )
                 break
 
             # 并行执行工具
@@ -368,10 +448,22 @@ class ReActAgent(Agent):
 
         if not final_answer:
             final_answer = "抱歉，无法在限定步数内完成任务。"
+            assistant_entry = {
+                "role": "assistant",
+                "content": final_answer
+            }
+            react_trace.append(assistant_entry)
+            history_str = self._build_react_history_str(react_trace)
+            system_prompt = self.prompt_template.format(
+                tools=tools_desc,
+                question=input_text,
+                history=history_str,
+                memory=memory
+            )
 
         # 异步保存记忆
         try:
-            task = asyncio.create_task(self._auto_save_all_memories(input_text, final_answer, **kwargs))
+            task = asyncio.create_task(self._auto_save_all_memories(input_text, final_answer, system_prompt, **kwargs))
             def cb(t): 
                 try: 
                     t.result()
