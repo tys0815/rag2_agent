@@ -45,7 +45,8 @@ class MCPWrappedTool(Tool):
         self.mcp_tool_name = tool_info.get('name', 'unknown')
 
         # 构建工具名：prefix + mcp_tool_name
-        tool_name = f"{prefix}{self.mcp_tool_name}" if prefix else self.mcp_tool_name
+        # tool_name = f"{prefix}{self.mcp_tool_name}" if prefix else self.mcp_tool_name
+        tool_name = self.mcp_tool_name  # 直接使用MCP工具名，不添加前缀
 
         # 获取描述
         description = tool_info.get('description', f'MCP工具: {self.mcp_tool_name}')

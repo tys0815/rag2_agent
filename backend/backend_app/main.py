@@ -124,39 +124,24 @@ def register_all_core_tools():
     #     logger.error(f"❌ 笔记工具注册失败: {e}")
     #     tools_registered.append(("note", "❌"))
 
-    # try:
-    #     # 7. MCP协议工具
-    #     logger.info("🔄 初始化MCP协议工具...")
+    try:
+        # 7. MCP协议工具
+        logger.info("🔄 初始化MCP协议工具...")
 
-    #     # 7.1 基础MCP工具（内置演示服务器）
-    #     mcp_tool = MCPTool(
-    #         name="mcp",
-    #         description="连接到MCP服务器，调用工具、读取资源和获取提示词。支持内置服务器和外部服务器。",
-    #         auto_expand=True
-    #     )
-    #     global_registry.register_tool(mcp_tool)
-    #     tools_registered.append(("mcp", "✅"))
-    #     logger.info("✅ 基础MCP工具已注册")
-
-    #     # 7.2 GitHub MCP工具（如果环境变量GITHUB_PERSONAL_ACCESS_TOKEN存在）
-    #     github_token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-    #     if github_token:
-    #         try:
-    #             github_mcp_tool = MCPTool(
-    #                 name="github",
-    #                 server_command=["npx", "-y", "@modelcontextprotocol/server-github"],
-    #                 env={"GITHUB_PERSONAL_ACCESS_TOKEN": github_token},
-    #                 auto_expand=True
-    #             )
-    #             global_registry.register_tool(github_mcp_tool)
-    #             tools_registered.append(("github_mcp", "✅"))
-    #             logger.info("✅ GitHub MCP工具已注册")
-    #         except Exception as e:
-    #             logger.warning(f"⚠️ GitHub MCP工具注册失败: {e}")
-    #             tools_registered.append(("github_mcp", "⚠️"))
-    #     else:
-    #         logger.info("ℹ️  未设置GITHUB_PERSONAL_ACCESS_TOKEN，跳过GitHub MCP工具注册")
-    #         tools_registered.append(("github_mcp", "⏭️"))
+        # 7.1 基础MCP工具（内置演示服务器）
+        server_script = os.path.join(os.path.dirname(__file__), "helloAgents", "protocols", "mcp", "mcpServer", "sendEmailServer.py")
+        send_qq_email_mcp_tool = MCPTool(
+            name="send_qq_email",
+            description="发送qq邮件",
+            server_command=["python", server_script],  # 启动MCP服务器的命令
+            auto_expand=True
+        )
+        global_registry.register_tool(send_qq_email_mcp_tool)
+        tools_registered.append(("send_qq_email_mcp_tool", "✅"))
+        logger.info("✅ 基础MCP工具已注册")
+    except Exception as e:
+        logger.error(f"❌ MCP工具注册失败: {e}")
+        tools_registered.append(("send_qq_email_mcp_tool", "❌"))
 
     #     # 7.3 A2A工具（需要a2a-sdk）
     #     try:
