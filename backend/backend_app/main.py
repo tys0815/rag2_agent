@@ -133,7 +133,8 @@ def register_all_core_tools():
         send_qq_email_mcp_tool = MCPTool(
             name="send_qq_email",
             description="发送qq邮件",
-            server_command=["python", server_script],  # 启动MCP服务器的命令
+            # server_command=["python", server_script],  # 启动MCP服务器的命令
+            server="http://127.0.0.1:8081/mcp",
             auto_expand=True
         )
         global_registry.register_tool(send_qq_email_mcp_tool)

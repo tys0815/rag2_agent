@@ -84,49 +84,6 @@ class ReActAgent(Agent):
             if tool.name == "memory":
                 continue
 
-            # ====================== 【新增：自动展开 MCP 工具】 ======================
-            # 如果这个工具是 MCPTool，并且能展开子工具
-            if tool.name == "send_qq_email":
-                # 获取所有展开的 MCP 子工具（如 mcp_add, mcp_greet 等）
-                expanded_tools = tool.get_expanded_tools()
-                
-                # 把每个子工具都注册成 LLM 可见的工具
-                for sub_tool in expanded_tools:
-                    sub_properties = {}
-                    sub_required = []
-                    try:
-                        sub_params = sub_tool.get_parameters()
-                        for p in sub_params:
-                            p_type = (p.type or "string").lower()
-                            if p_type not in ["string", "number", "integer", "boolean", "array", "object"]:
-                                p_type = "string"
-
-                            sub_properties[p.name] = {
-                                "type": p_type,
-                                "description": p.description or ""
-                            }
-                            if getattr(p, "required", True):
-                                sub_required.append(p.name)
-                    except Exception:
-                        sub_properties["input"] = {"type": "string", "description": "输入内容"}
-                        sub_required = ["input"]
-
-                    schemas.append({
-                        "type": "function",
-                        "function": {
-                            "name": sub_tool.name,
-                            "description": sub_tool.description or "",
-                            "parameters": {
-                                "type": "object",
-                                "properties": sub_properties,
-                                "required": sub_required
-                            }
-                        }
-                    })
-                # MCP 主工具本身不注册，只注册展开后的子工具
-                continue
-            # ====================== 【MCP 扩展结束】 ======================
-
             properties = {}
             required = []
             try:
@@ -464,9 +421,9 @@ class ReActAgent(Agent):
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     args = {}
-
-                args["user_id"] = kwargs.get("user_id")
-                args["session_id"] = kwargs.get("session_id")
+                if func_name != "send_qq_email":
+                    args["user_id"] = kwargs.get("user_id")
+                    args["session_id"] = kwargs.get("session_id")
                 args = self._convert_params(func_name, args)
 
                 parallel_tasks.append({"tool_name": func_name, "input_data": args})

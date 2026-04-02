@@ -129,7 +129,8 @@ class MCPTool(Tool):
 
         super().__init__(
             name=name,
-            description=description
+            description=description,
+            expandable=auto_expand
         )
 
     def _prepare_env(self,
@@ -338,132 +339,170 @@ class MCPTool(Tool):
 
     def run(self, parameters: Dict[str, Any]) -> str:
         """
-        执行 MCP 操作
-
-        Args:
-            parameters: 包含以下参数的字典
-                - action: 操作类型 (list_tools, call_tool, list_resources, read_resource, list_prompts, get_prompt)
-                  如果不指定action但指定了tool_name，会自动推断为call_tool
-                - tool_name: 工具名称（call_tool 需要）
-                - arguments: 工具参数（call_tool 需要）
-                - uri: 资源 URI（read_resource 需要）
-                - prompt_name: 提示词名称（get_prompt 需要）
-                - prompt_arguments: 提示词参数（get_prompt 可选）
-
-        Returns:
-            操作结果
+        同步可调试执行 MCP 操作（无异步、不跳断点、正常执行）
         """
-        from helloAgents.protocols.mcp.client import MCPClient
+        print("🔥 已进入 MCPTool.run 方法")
+        print("参数:", parameters)
 
-        # 智能推断action：如果没有action但有tool_name，自动设置为call_tool
+        from helloAgents.protocols.mcp.client import MCPClient
+        import asyncio
+
         action = parameters.get("action", "").lower()
         if not action and "tool_name" in parameters:
             action = "call_tool"
             parameters["action"] = action
 
         if not action:
-            return "错误：必须指定 action 参数或 tool_name 参数"
-        
+            return "错误：必须指定 action"
+
         try:
-            # 使用增强的异步客户端
-            import asyncio
-            from helloAgents.protocols.mcp.client import MCPClient
-
-            async def run_mcp_operation():
-                # 根据配置选择客户端创建方式
-                if self.server:
-                    # 使用内置服务器（内存传输）
-                    client_source = self.server
-                else:
-                    # 使用外部服务器命令
-                    client_source = self.server_command
-
+            # 同步执行异步函数（不会跳断点、不会跑子线程）
+            async def task():
+                client_source = self.server or self.server_command
                 async with MCPClient(client_source, self.server_args, env=self.env) as client:
                     if action == "list_tools":
                         tools = await client.list_tools()
-                        if not tools:
-                            return "没有找到可用的工具"
-                        result = f"找到 {len(tools)} 个工具:\n"
-                        for tool in tools:
-                            result += f"- {tool['name']}: {tool['description']}\n"
-                        return result
-
+                        return "\n".join([f"- {t['name']}: {t['description']}" for t in tools])
                     elif action == "call_tool":
                         tool_name = parameters.get("tool_name")
-                        arguments = parameters.get("arguments", {})
-                        if not tool_name:
-                            return "错误：必须指定 tool_name 参数"
-                        result = await client.call_tool(tool_name, arguments)
-                        return f"工具 '{tool_name}' 执行结果:\n{result}"
+                        args = parameters.get("arguments", {})
+                        return await client.call_tool(tool_name, args)
+                    return "不支持的操作"
 
-                    elif action == "list_resources":
-                        resources = await client.list_resources()
-                        if not resources:
-                            return "没有找到可用的资源"
-                        result = f"找到 {len(resources)} 个资源:\n"
-                        for resource in resources:
-                            result += f"- {resource['uri']}: {resource['name']}\n"
-                        return result
+            # 最干净的同步运行
+            return asyncio.run(task())
 
-                    elif action == "read_resource":
-                        uri = parameters.get("uri")
-                        if not uri:
-                            return "错误：必须指定 uri 参数"
-                        content = await client.read_resource(uri)
-                        return f"资源 '{uri}' 内容:\n{content}"
-
-                    elif action == "list_prompts":
-                        prompts = await client.list_prompts()
-                        if not prompts:
-                            return "没有找到可用的提示词"
-                        result = f"找到 {len(prompts)} 个提示词:\n"
-                        for prompt in prompts:
-                            result += f"- {prompt['name']}: {prompt['description']}\n"
-                        return result
-
-                    elif action == "get_prompt":
-                        prompt_name = parameters.get("prompt_name")
-                        prompt_arguments = parameters.get("prompt_arguments", {})
-                        if not prompt_name:
-                            return "错误：必须指定 prompt_name 参数"
-                        messages = await client.get_prompt(prompt_name, prompt_arguments)
-                        result = f"提示词 '{prompt_name}':\n"
-                        for msg in messages:
-                            result += f"[{msg['role']}] {msg['content']}\n"
-                        return result
-
-                    else:
-                        return f"错误：不支持的操作 '{action}'"
-
-            # 运行异步操作
-            try:
-                # 检查是否已有运行中的事件循环
-                try:
-                    loop = asyncio.get_running_loop()
-                    # 如果有运行中的循环，在新线程中运行新的事件循环
-                    import concurrent.futures
-                    import threading
-
-                    def run_in_thread():
-                        # 在新线程中创建新的事件循环
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            return new_loop.run_until_complete(run_mcp_operation())
-                        finally:
-                            new_loop.close()
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(run_in_thread)
-                        return future.result()
-                except RuntimeError:
-                    # 没有运行中的循环，直接运行
-                    return asyncio.run(run_mcp_operation())
-            except Exception as e:
-                return f"异步操作失败: {str(e)}"
-                    
         except Exception as e:
-            return f"MCP 操作失败: {str(e)}"
+            return f"MCP 执行失败：{str(e)}"
+
+    # def run(self, parameters: Dict[str, Any]) -> str:
+    #     """
+    #     执行 MCP 操作
+
+    #     Args:
+    #         parameters: 包含以下参数的字典
+    #             - action: 操作类型 (list_tools, call_tool, list_resources, read_resource, list_prompts, get_prompt)
+    #               如果不指定action但指定了tool_name，会自动推断为call_tool
+    #             - tool_name: 工具名称（call_tool 需要）
+    #             - arguments: 工具参数（call_tool 需要）
+    #             - uri: 资源 URI（read_resource 需要）
+    #             - prompt_name: 提示词名称（get_prompt 需要）
+    #             - prompt_arguments: 提示词参数（get_prompt 可选）
+
+    #     Returns:
+    #         操作结果
+    #     """
+    #     from helloAgents.protocols.mcp.client import MCPClient
+
+    #     # 智能推断action：如果没有action但有tool_name，自动设置为call_tool
+    #     action = parameters.get("action", "").lower()
+    #     if not action and "tool_name" in parameters:
+    #         action = "call_tool"
+    #         parameters["action"] = action
+
+    #     if not action:
+    #         return "错误：必须指定 action 参数或 tool_name 参数"
+        
+    #     try:
+    #         # 使用增强的异步客户端
+    #         import asyncio
+    #         from helloAgents.protocols.mcp.client import MCPClient
+
+    #         async def run_mcp_operation():
+    #             # 根据配置选择客户端创建方式
+    #             if self.server:
+    #                 # 使用内置服务器（内存传输）
+    #                 client_source = self.server
+    #             else:
+    #                 # 使用外部服务器命令
+    #                 client_source = self.server_command
+
+    #             async with MCPClient(client_source, self.server_args, env=self.env) as client:
+    #                 if action == "list_tools":
+    #                     tools = await client.list_tools()
+    #                     if not tools:
+    #                         return "没有找到可用的工具"
+    #                     result = f"找到 {len(tools)} 个工具:\n"
+    #                     for tool in tools:
+    #                         result += f"- {tool['name']}: {tool['description']}\n"
+    #                     return result
+
+    #                 elif action == "call_tool":
+    #                     tool_name = parameters.get("tool_name")
+    #                     arguments = parameters.get("arguments", {})
+    #                     if not tool_name:
+    #                         return "错误：必须指定 tool_name 参数"
+    #                     result = await client.call_tool(tool_name, arguments)
+    #                     return f"工具 '{tool_name}' 执行结果:\n{result}"
+
+    #                 elif action == "list_resources":
+    #                     resources = await client.list_resources()
+    #                     if not resources:
+    #                         return "没有找到可用的资源"
+    #                     result = f"找到 {len(resources)} 个资源:\n"
+    #                     for resource in resources:
+    #                         result += f"- {resource['uri']}: {resource['name']}\n"
+    #                     return result
+
+    #                 elif action == "read_resource":
+    #                     uri = parameters.get("uri")
+    #                     if not uri:
+    #                         return "错误：必须指定 uri 参数"
+    #                     content = await client.read_resource(uri)
+    #                     return f"资源 '{uri}' 内容:\n{content}"
+
+    #                 elif action == "list_prompts":
+    #                     prompts = await client.list_prompts()
+    #                     if not prompts:
+    #                         return "没有找到可用的提示词"
+    #                     result = f"找到 {len(prompts)} 个提示词:\n"
+    #                     for prompt in prompts:
+    #                         result += f"- {prompt['name']}: {prompt['description']}\n"
+    #                     return result
+
+    #                 elif action == "get_prompt":
+    #                     prompt_name = parameters.get("prompt_name")
+    #                     prompt_arguments = parameters.get("prompt_arguments", {})
+    #                     if not prompt_name:
+    #                         return "错误：必须指定 prompt_name 参数"
+    #                     messages = await client.get_prompt(prompt_name, prompt_arguments)
+    #                     result = f"提示词 '{prompt_name}':\n"
+    #                     for msg in messages:
+    #                         result += f"[{msg['role']}] {msg['content']}\n"
+    #                     return result
+
+    #                 else:
+    #                     return f"错误：不支持的操作 '{action}'"
+
+    #         # 运行异步操作
+    #         try:
+    #             # 检查是否已有运行中的事件循环
+    #             try:
+    #                 loop = asyncio.get_running_loop()
+    #                 # 如果有运行中的循环，在新线程中运行新的事件循环
+    #                 import concurrent.futures
+    #                 import threading
+
+    #                 def run_in_thread():
+    #                     # 在新线程中创建新的事件循环
+    #                     new_loop = asyncio.new_event_loop()
+    #                     asyncio.set_event_loop(new_loop)
+    #                     try:
+    #                         return new_loop.run_until_complete(run_mcp_operation())
+    #                     finally:
+    #                         new_loop.close()
+
+    #                 with concurrent.futures.ThreadPoolExecutor() as executor:
+    #                     future = executor.submit(run_in_thread)
+    #                     return future.result()
+    #             except RuntimeError:
+    #                 # 没有运行中的循环，直接运行
+    #                 return asyncio.run(run_mcp_operation())
+    #         except Exception as e:
+    #             return f"异步操作失败: {str(e)}"
+                    
+    #     except Exception as e:
+    #         return f"MCP 操作失败: {str(e)}"
     
     def get_parameters(self) -> List[ToolParameter]:
         """获取工具参数定义"""
