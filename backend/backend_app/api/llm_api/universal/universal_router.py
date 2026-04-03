@@ -1,8 +1,6 @@
-"""全能企业级助手API路由
-提供全能企业级助手功能，集成RAG、记忆、命令行、MCP等工具
-"""
-
 import re
+import asyncio
+import nest_asyncio
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -16,107 +14,68 @@ from helloAgents.core.exceptions import (
     HelloAgentsException,
     ToolException
 )
+nest_asyncio.apply()
+
+# 评估工具
+from helloAgents.tools.builtin.bfcl_evaluation_tool import BFCLEvaluationTool
 
 logger = logging.getLogger(__name__)
-
-# 创建路由器
 universal_router = APIRouter()
 
 # ==================== 请求/响应模型 ====================
-
 class UniversalChatRequest(BaseModel):
-    """全能聊天请求"""
     text: str = Field(..., description="用户输入的文本", max_length=5000)
     user_id: str = Field(..., description="用户ID（必需）")
-    agent_id: Optional[str] = Field("universal_assistant", description="助手ID（默认为universal_assistant）")
-    session_id: Optional[str] = Field(None, description="会话ID（可选，不传则自动生成）")
-    enable_memory: Optional[bool] = Field(True, description="是否启用记忆")
-    enable_rag: Optional[bool] = Field(True, description="是否启用RAG检索")
-    max_context_length: Optional[int] = Field(2000, description="最大上下文长度", ge=100, le=8000)
-    tool_choice: Optional[str] = Field("auto", description="工具选择策略")
+    agent_id: Optional[str] = Field("universal_assistant")
+    session_id: Optional[str] = Field(None)
+    enable_memory: Optional[bool] = Field(True)
+    enable_rag: Optional[bool] = Field(True)
+    max_context_length: Optional[int] = Field(2000, ge=100, le=8000)
+    tool_choice: Optional[str] = Field("auto")
 
     @field_validator("user_id")
     def validate_user_id(cls, v):
-        """验证用户ID格式"""
         if not re.match(r"^[a-zA-Z0-9_-]{3,50}$", v):
-            raise ValueError("用户ID只能包含字母、数字、下划线和短横线，长度3-50")
+            raise ValueError("用户ID格式错误")
         return v
 
-    class Config:
-        schema_extra = {
-            "example": {
-                "text": "请搜索最新的AI发展动态，并总结成报告",
-                "user_id": "uid_12345",
-                "agent_id": "universal_assistant",
-                "session_id": "session_abc123",
-                "enable_memory": True,
-                "enable_rag": True,
-                "max_context_length": 2000,
-                "tool_choice": "auto"
-            }
-        }
-
-
 class UniversalChatResponse(BaseModel):
-    """全能聊天响应"""
-    success: bool = Field(..., description="是否成功")
-    data: str = Field(..., description="助手回答")
-    session_id: str = Field(..., description="会话ID")
-    user_id: str = Field(..., description="用户ID")
-    agent_id: str = Field(..., description="助手ID")
-    tool_calls: Optional[int] = Field(None, description="工具调用次数")
-    timestamp: str = Field(..., description="响应时间戳")
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "success": True,
-                "data": "根据最新搜索，AI发展动态如下...",
-                "session_id": "session_abc123",
-                "user_id": "uid_12345",
-                "agent_id": "universal_assistant",
-                "tool_calls": 2,
-                "timestamp": "2024-01-01T12:00:00"
-            }
-        }
-
+    success: bool
+    data: str
+    session_id: str
+    user_id: str
+    agent_id: str
+    tool_calls: Optional[int]
+    timestamp: str
 
 class ToolStatisticsResponse(BaseModel):
-    """工具统计响应"""
-    success: bool = Field(..., description="是否成功")
-    statistics: Dict[str, Any] = Field(..., description="统计信息")
-    timestamp: str = Field(..., description="响应时间戳")
+    success: bool
+    statistics: Dict[str, Any]
+    timestamp: str
 
+# ==================== 【终极正确】异步Agent → 同步适配（FastAPI安全版）====================
+class SyncAgentWrapper:
+    def __init__(self, async_agent):
+        self.agent = async_agent
+        self.name = async_agent.name
 
+    def run(self, prompt, **kwargs):
+        # ✅ 唯一在 FastAPI 中安全运行异步 Agent 的方式
+        return asyncio.run(self.agent.run(prompt,** kwargs))
 
-
-
-
-# ==================== API端点 ====================
-
+# ==================== 正常聊天接口 ====================
 @universal_router.post("/chat", response_model=UniversalChatResponse)
 async def universal_chat(
     request: Request,
     body: UniversalChatRequest
 ) -> UniversalChatResponse:
-    """
-    全能聊天接口
-
-    支持：
-    - 多用户隔离
-    - 记忆管理
-    - 知识库检索
-    - 命令行操作
-    - 实时搜索
-    - 多工具自动调用
-    """
     try:
         agent = KnowledgeBaseAssistant(
             name="通用助手",
             llm=HelloAgentsLLM(),
             tool_registry=global_registry
         )
-        # 调用助手（通过依赖注入获取）
+
         response = await agent.run(
             input_text=body.text,
             user_id=body.user_id,
@@ -124,8 +83,7 @@ async def universal_chat(
             session_id=body.session_id
         )
 
-        # 使用传入的session_id或生成新的
-        session_id = body.session_id or f"universal_session_{datetime.now().timestamp():.0f}"
+        session_id = body.session_id or f"ses_{int(datetime.now().timestamp())}"
 
         return UniversalChatResponse(
             success=True,
@@ -133,13 +91,38 @@ async def universal_chat(
             session_id=session_id,
             user_id=body.user_id,
             agent_id=body.agent_id,
-            tool_calls=0,  # 暂时不统计，后续可以增强
+            tool_calls=0,
             timestamp=datetime.now().isoformat()
         )
 
     except HelloAgentsException as e:
-        logger.error(f"全能聊天业务异常: {e}", exc_info=True)
-        raise
+        logger.error(f"业务异常: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"全能聊天失败: {e}", exc_info=True)
-        raise
+        logger.error(f"聊天失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="服务内部错误")
+
+# ==================== 【独立】BFCL评估接口（不影响正常业务） ====================
+@universal_router.get("/bfcl-eval")
+def run_bfcl_evaluation():  # 注意：这里必须是 同步函数！
+    try:
+        # 初始化
+        llm = HelloAgentsLLM()
+        agent = KnowledgeBaseAssistant(name="BFCL-Eval-Agent", llm=llm)
+        sync_agent = SyncAgentWrapper(agent)
+
+        # 执行评估
+        bfcl_tool = BFCLEvaluationTool()
+        result = bfcl_tool.run(
+            agent=sync_agent,
+            category="simple_python",
+            max_samples=0,
+            run_official_eval=True
+        )
+
+        return {
+            "success": True,
+            "result": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}

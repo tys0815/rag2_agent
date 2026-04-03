@@ -81,7 +81,4 @@ class KnowledgeBaseAssistant(ReActAgent):
         # if not enable_rag:
         #     # 禁用RAG → 直接走ReAct通用回答
         #     return super().run(input_text,** kwargs)
-
-        # ===================== 企业级核心：全部交给 ReAct 自动判断 =====================
-        logger.info("业务交由 ReAct 统一推理：自动判断是否检索知识库")
         return super().run(input_text, **kwargs)

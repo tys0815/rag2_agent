@@ -46,7 +46,7 @@
     <!-- 输入区 -->
     <div class="border-t border-gray-200 p-4">
       <div class="max-w-3xl mx-auto">
-        <form @submit.prevent="sendMessage" class="flex flex-col gap-3">
+        <form @submit.prevent="sendMessage2" class="flex flex-col gap-3">
           <textarea
             v-model="messageInput"
             class="w-full border border-gray-200 rounded-lg p-3 min-h-[80px] focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-300 resize-none text-sm"
@@ -99,6 +99,28 @@ const escapeHtml = (str: string) => {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+};
+
+const sendMessage2 = async () => {
+  const apiEndpoint = 'universal/bfcl-eval';
+  
+  // ✅ GET 请求 不能带 body！直接拼 URL
+  const response = await fetch(`${apiUrl.value}${apiEndpoint}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  });
+  
+  console.log('!!!!!!!', response);
+  
+  if (!response.ok) {
+    throw new Error(`API 响应错误: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+  console.log("BFCL 评估结果：", result);
+  return result;
 };
 
 // 发送消息
