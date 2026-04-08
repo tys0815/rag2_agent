@@ -1,9 +1,13 @@
+from datetime import datetime
 from typing import List, Dict, Optional, Any
 import os
 import hashlib
 import sqlite3
 import time
 import json
+
+from helloAgents.memory.storage.kg_rag import Neo4jKGRAG_Enterprise
+from helloAgents.memory.base import MemoryItem
 from ..embedding import get_text_embedder, get_dimension
 from ..storage.qdrant_store import QdrantVectorStore
 
@@ -386,7 +390,7 @@ def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap:
             })
             
     print(f"[RAG] Universal loader done: total_chunks={len(chunks)}")
-    return chunks
+    return chunks, markdown_text
 
 
 def build_graph_from_chunks(neo4j, chunks: List[Dict]) -> None:
@@ -1149,7 +1153,7 @@ def create_rag_pipeline(
 
     def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, user_id: str = "default") -> int:
         """Add documents to RAG pipeline"""
-        chunks = load_and_chunk_texts(
+        chunks, markdown_text = load_and_chunk_texts(
             paths=file_paths,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -1161,6 +1165,27 @@ def create_rag_pipeline(
             chunks=chunks,
             user_id=user_id
         )
+
+        try:
+            # 添加知识图谱
+            # 初始化图谱
+            kg = Neo4jKGRAG_Enterprise(user_id=user_id)
+
+            # 遍历所有 chunk 写入知识图谱
+            chunk = chunks[0]
+            item = {
+                "id": chunk["id"],
+                "content": markdown_text,
+                "metadata": {
+                    "doc_id": chunk["metadata"].get("doc_id")
+                },
+            }
+            kg.write_chunk_to_kg(item)
+
+            kg.close()
+
+        except Exception as e:
+            print(f"[WARNING] 知识图谱入库失败: {e}")
         return len(chunks)
     
     def search(query: str, top_k: int = 8, score_threshold: Optional[float] = None):
