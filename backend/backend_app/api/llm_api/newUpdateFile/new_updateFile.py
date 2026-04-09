@@ -10,7 +10,6 @@ import tempfile
 import shutil
 
 from helloAgents.tools.async_executor import AsyncToolExecutor
-from helloAgents.utils.helpers import get_file_path_from_upload_async
 from helloAgents.tools.builtin.rag_tool import RAGTool
 from helloAgents.tools.builtin.memory_tool import MemoryTool
 from helloAgents.tools.registry import global_registry
@@ -247,20 +246,20 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
         }
 
     # RAG 入库（后台执行，不暴露）
-    file_paths = [f["file_path"] for f in saved_files]
+  
     result = rag_tool.run({
         "action": "add_document",
-        "file_path": file_paths,
+        "file_path": saved_files,
         "user_id": user_id
     })
 
     return {
         "success": True,
-        "msg": f"成功 {len(file_paths)} | 去重 {len(duplicate_files)}",
+        "msg": f"成功 {len(saved_files)} | 去重 {len(duplicate_files)}",
         "data": {
             "total": len(files),
             "saved": len(saved_files),
-            "success": file_paths,
+            "success": saved_files,
             "duplicate_files": duplicate_files,
             "namespace": user_id,
             "result": result

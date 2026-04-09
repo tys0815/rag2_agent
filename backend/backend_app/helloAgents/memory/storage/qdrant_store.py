@@ -535,6 +535,33 @@ class QdrantVectorStore:
         info["store_type"] = "qdrant"
         return info
     
+    # ------------------------------
+    # 你要的：根据 doc_id + user_id 删除向量 
+    # ------------------------------
+    def delete_document(self, document_id: str, user_id: str) -> bool:
+        try:
+            # 组合过滤：必须同时匹配 user_id 和 doc_id
+            query_filter = Filter(
+                must=[
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    FieldCondition(key="doc_id", match=MatchValue(value=document_id)),
+                ]
+            )
+            
+            # 调用 qdrant 删除
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(filter=query_filter),
+                wait=True,
+            )
+            
+            logger.info(f"✅ 成功删除文档向量: user_id={user_id}, doc_id={document_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ 删除文档向量失败: {e}")
+            return False
+    
     def health_check(self) -> bool:
         """
         健康检查

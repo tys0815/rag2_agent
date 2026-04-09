@@ -436,10 +436,14 @@ class RAGTool(Tool):
             if action == "add_document":
                 return self._add_document(
                     file_path=parameters.get("file_path"),
-                    document_id=parameters.get("document_id"),
                     user_id=parameters.get("user_id", "default"),
                     chunk_size=parameters.get("chunk_size", 800),
                     chunk_overlap=parameters.get("chunk_overlap", 100)
+                )
+            elif action == "delete_document":
+                return self._delete_document(
+                    document_id=parameters.get("doc_id"),
+                    user_id=parameters.get("user_id")
                 )
             elif action == "add_text":
                 return self._add_text(
@@ -502,7 +506,6 @@ class RAGTool(Tool):
     def _add_document(
         self,
         file_path: list[str],
-        document_id: str = None,
         user_id: str = "default",
         chunk_size: int = 800,
         chunk_overlap: int = 100
@@ -551,6 +554,29 @@ class RAGTool(Tool):
         except Exception as e:
             return f"❌ 添加文档失败: {str(e)}"
     
+    def _delete_document(
+            self,
+            document_id: str,
+            user_id: str
+    ) -> bool:
+        """从知识库中删除文档
+
+        Args:
+            document_id: 文档ID
+            user_id: 知识库命名空间
+
+        Returns:
+            是否成功删除
+        """
+        try:
+            pipeline = self._get_pipeline(user_id)
+            success = pipeline["delete_document"](document_id=document_id, user_id=user_id)
+
+            return success
+        except Exception as e:
+            print(f"❌ 删除文档失败: {str(e)}")
+            return False
+
     @tool_action("rag_add_text", "添加文本到知识库")
     def _add_text(
         self,

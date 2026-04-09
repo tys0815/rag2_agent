@@ -20,13 +20,17 @@ export interface HistoryItem {
   list: Message[];
 }
 
-export interface doc_metadata {
-  file_name: string;
-}
-
 export interface KnowledgeBaseItem {
-  doc_id: string;
-  doc_metadata: doc_metadata;
+  filename: string;
+  original_filename: string;
+  file_path: string;
+  file_hash: string;
+  file_type: string;
+  file_size_bytes: number;
+  file_size: string;
+  create_time: string;
+  update_time: string;
+  is_versioned: boolean;
 }
 
 // 定义应用状态类型
@@ -39,8 +43,7 @@ interface AppState {
   currentHistoryId: string | null;
   chatList: ChatItem[];
   historyList: HistoryItem[];
-  KnowledgeBaseItem: KnowledgeBaseItem[];
-  kg_knowledgeBaseItem: KnowledgeBaseItem[];
+  KnowledgeBaseItem: KnowledgeBaseItem[]
 }
 
 export const useAppStore = defineStore('app', {
@@ -93,8 +96,7 @@ export const useAppStore = defineStore('app', {
         ]
       }
     ],
-    KnowledgeBaseItem: [],
-    kg_knowledgeBaseItem: []
+    KnowledgeBaseItem: []
   }),
   getters: {
     // 获取当前选中的历史记录
@@ -116,9 +118,6 @@ export const useAppStore = defineStore('app', {
     },
     updateKnowledgeBaseItem(items: KnowledgeBaseItem[]) {
       this.KnowledgeBaseItem = items;
-    },
-    updatekgKnowledgeBaseItem(items: KnowledgeBaseItem[]) {
-      this.kg_knowledgeBaseItem = items;
     },
     updateCode(newCode: string) {
       this.code = newCode;
@@ -220,9 +219,7 @@ export const useAppStore = defineStore('app', {
           ]
         }
       ];
-      this.KnowledgeBaseItem = [];
-      this.kg_knowledgeBaseItem = [];
+      this.KnowledgeBaseItem = []
     }
-  },
-  persist: true
+  }
 });

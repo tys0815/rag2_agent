@@ -28,13 +28,10 @@
           >
             <div class="flex items-center gap-3">
               <i class="fa fa-file-text-o text-blue-500"></i>
-              <span class="text-gray-800">{{ item.doc_metadata.file_name }}</span>
+              <span class="text-gray-800">{{ item.filename }}</span>
             </div>
-            <div class="flex gap-2">
-              <button class="text-blue-500 hover:text-blue-700 text-sm" @click="handleEdit(item)">
-                编辑
-              </button>
-              <button class="text-red-500 hover:text-red-700 text-sm" @click="handleDelete(item.doc_id, index)">
+            <div class="flex gap-1">
+              <button class="text-red-500 hover:text-red-700 text-sm" @click="handleDelete(item.file_hash)">
                 删除
               </button>
             </div>
@@ -96,10 +93,16 @@ const { apiUrl, KnowledgeBaseItem } = storeToRefs(appStore);
 
 // 定义类型
 interface KnowledgeBaseItem {
-  doc_id: string;
-  doc_metadata: {
-    file_name: string;
-  };
+  filename: string;
+  original_filename: string;
+  file_path: string;
+  file_hash: string;
+  file_type: string;
+  file_size_bytes: number;
+  file_size: string;
+  create_time: string;
+  update_time: string;
+  is_versioned: boolean;
 }
 
 // 定义 Props
@@ -119,7 +122,6 @@ const loading = ref(false); // 列表加载状态
 const uploading = ref(false); // 上传加载状态
 const uploadMode = ref('multiple'); // 'single', 'multiple', 'directory'
 let knowledgeBaseList = reactive<KnowledgeBaseItem[]>([]); // 知识库文件列表
-let kg_knowledgeBaseList = reactive<KnowledgeBaseItem[]>([]);
 // 上传按钮文本计算属性
 const uploadButtonText = computed(() => {
   switch (uploadMode.value) {
@@ -148,23 +150,29 @@ watch(
 const fetchFileList = async () => {
   loading.value = true;
   try {
-    const response = await fetch(`${apiUrl.value}ingest/list`);
+    
+    const response = await fetch(`${apiUrl.value}ingest/list`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: "uid_12345", // 传给后端
+      }),
+    });
+
     if (!response.ok) throw new Error("获取文件列表失败");
-    console.info("初始化知识库数据：", response);
     const result = await response.json();
+    console.info("初始化知识库数据：", result);
 
     // 清空原有数据
     knowledgeBaseList.length = 0;
-    kg_knowledgeBaseList.length = 0;
 
     // 添加所有已上传的文件
-    if (result.data && Array.isArray(result.data)) {
-      knowledgeBaseList = result.data;
-      kg_knowledgeBaseList = result.data_kg;
-      console.log("知识库rag列表：", result.data);
-      console.log("知识库kg_rag列表：", result.data_kg);
+    if (Array.isArray(result.files)) {
+      knowledgeBaseList = result.files;
+      console.log("知识库文件列表：", result.files);
       appStore.updateKnowledgeBaseItem([...knowledgeBaseList]);
-      appStore.updatekgKnowledgeBaseItem([...kg_knowledgeBaseList]);
     }
 
   } catch (error) {
@@ -244,7 +252,7 @@ const handleFileSelect = async (e: Event) => {
     }
 
     // 上传成功后刷新列表
-    // await fetchFileList();
+    await fetchFileList();
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "文件上传失败";
     console.error("上传失败：", errorMsg);
@@ -258,27 +266,22 @@ const handleFileSelect = async (e: Event) => {
   }
 };
 
-// 4. 处理编辑（预留：可扩展）
-const handleEdit = (item: KnowledgeBaseItem) => {
-  console.log('编辑文件：', item);
-  // 示例：修改文件名（可对接后端编辑接口）
-  const newFileName = prompt('请输入新的文件名', item.doc_metadata.file_name);
-  if (newFileName && newFileName.trim() !== '') {
-    // 此处可调用编辑接口，成功后更新列表
-    item.doc_metadata.file_name = newFileName.trim();
-  }
-};
-
 // 5. 处理删除（对接后端删除接口）
-const handleDelete = async (docId: string, index: number) => {
+const handleDelete = async (docId: string) => {
   if (!confirm('确定要删除该文件吗？')) {
     return;
   }
 
   try {
-    const kg_docId = kg_knowledgeBaseList[index].doc_id;
-    const response = await fetch(`${apiUrl.value}ingest/${docId}/${kg_docId}`, {
-      method: 'DELETE',
+    const response = await fetch(`${apiUrl.value}ingest/delete`, {
+      method: 'POST',
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: "uid_12345", // 传给后端
+        doc_id: docId
+      }),
     });
 
     if (!response.ok) throw new Error("删除文件失败");
