@@ -69,3 +69,4 @@ backend/knowledge_base/
 5.0.0
 .claude/settings.local.json
 .vscode/launch.json
+knowledge_base/

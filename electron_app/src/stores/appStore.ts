@@ -221,5 +221,6 @@ export const useAppStore = defineStore('app', {
       ];
       this.KnowledgeBaseItem = []
     }
-  }
+  },
+  persist: true
 });

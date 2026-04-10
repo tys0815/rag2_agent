@@ -14,6 +14,9 @@ from helloAgents.tools.builtin.rag_tool import RAGTool
 from helloAgents.tools.builtin.memory_tool import MemoryTool
 from helloAgents.tools.registry import global_registry
 
+from redis_config import get_redis, QUEUE_RAG
+redis = get_redis()
+
 logger = logging.getLogger(__name__)
 new_updateFile_router = APIRouter()
 
@@ -229,7 +232,7 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
     # --------------------------
     # 提交后台 → 主流程完全不等待
     # --------------------------
-    asyncio.create_task(save_all_memories_in_background())
+    # asyncio.create_task(save_all_memories_in_background())
 
     # ============================
     # ✅ 记忆存储结束
@@ -246,12 +249,12 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
         }
 
     # RAG 入库（后台执行，不暴露）
-  
-    result = rag_tool.run({
+    task = {
         "action": "add_document",
         "file_path": saved_files,
         "user_id": user_id
-    })
+    }
+    redis.rpush(QUEUE_RAG, json.dumps(task))
 
     return {
         "success": True,
@@ -261,8 +264,7 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
             "saved": len(saved_files),
             "success": saved_files,
             "duplicate_files": duplicate_files,
-            "namespace": user_id,
-            "result": result
+            "namespace": user_id
         }
     }
 
