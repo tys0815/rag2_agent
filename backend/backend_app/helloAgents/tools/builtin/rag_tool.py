@@ -440,6 +440,12 @@ class RAGTool(Tool):
                     chunk_size=parameters.get("chunk_size", 800),
                     chunk_overlap=parameters.get("chunk_overlap", 100)
                 )
+            if action == "add_neo4j_document":
+                return self._add_neo4j_document(
+                    file_path=parameters.get("file_path"),
+                    user_id=parameters.get("user_id", "default"),
+                    chunk_size=parameters.get("chunk_size", 1000)
+                )
             elif action == "delete_document":
                 return self._delete_document(
                     document_id=parameters.get("doc_id"),
@@ -501,6 +507,52 @@ class RAGTool(Tool):
                 required=False
             ),
         ]
+    
+    def _add_neo4j_document(
+        self,
+        file_path: list[str],
+        user_id: str = "default",
+        chunk_size: int = 1000
+    ) -> str:
+        """添加文档到Neo4j知识图谱
+
+        Args:
+            file_path: 文档文件路径
+            user_id: 知识库命名空间（用于隔离不同项目）
+            chunk_size: 分块大小
+
+        Returns:
+            执行结果
+        """
+        try:
+            pipeline = self._get_pipeline(user_id)
+            t0 = time.time()
+
+            chunks_added = pipeline["add_neo4j_document"](
+                file_paths=file_path,
+                chunk_size=chunk_size,
+                user_id=user_id
+            )
+
+            t1 = time.time()
+            process_ms = int((t1 - t0) * 1000)
+
+            if chunks_added == 0:
+                return f"⚠️ 未能从文件解析内容: {os.path.basename(file_path)}"
+
+            # 添加文档后清理该命名空间的缓存
+            self._clear_namespace_cache(user_id)
+
+            return (
+                f"✅ 文档已添加到知识库: {', '.join(os.path.basename(p) for p in file_path)}\n"
+                f"📊 分块数量: {chunks_added}\n"
+                f"⏱️ 处理时间: {process_ms}ms\n"
+                f"📝 命名空间: {user_id}"
+                f"\n🧹 已清理相关缓存"
+            )
+
+        except Exception as e:
+            return f"❌ 添加文档失败: {str(e)}"
 
     @tool_action("rag_add_document", "添加文档到知识库（支持PDF、Word、Excel、PPT、图片、音频等多种格式）")
     def _add_document(

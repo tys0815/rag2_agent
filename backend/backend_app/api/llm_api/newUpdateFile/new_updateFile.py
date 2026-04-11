@@ -14,7 +14,7 @@ from helloAgents.tools.builtin.rag_tool import RAGTool
 from helloAgents.tools.builtin.memory_tool import MemoryTool
 from helloAgents.tools.registry import global_registry
 
-from redis_config import get_redis, QUEUE_RAG
+from redis_config import get_redis, QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J
 redis = get_redis()
 
 logger = logging.getLogger(__name__)
@@ -248,13 +248,21 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
             "duplicates": duplicate_files
         }
 
-    # RAG 入库（后台执行，不暴露）
+    # RAG qdrant 入库
     task = {
         "action": "add_document",
         "file_path": saved_files,
         "user_id": user_id
     }
-    redis.rpush(QUEUE_RAG, json.dumps(task))
+    redis.rpush(QUEUE_RAG_QDRANT, json.dumps(task))
+
+    # RAG neo4j 入库
+    task = {
+        "action": "add_neo4j_document",
+        "file_path": saved_files,
+        "user_id": user_id
+    }
+    redis.rpush(QUEUE_RAG_NEO4J, json.dumps(task))
 
     return {
         "success": True,

@@ -333,7 +333,6 @@ def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap:
     """
     print(f"[RAG] Universal loader start: files={len(paths)} chunk_size={chunk_size} overlap={chunk_overlap} ns={user_id or 'default'}")
     chunks: List[Dict] = []
-    filetexts: List[Dict] = []
     seen_hashes = set()
     
     for pathfile in paths:
@@ -354,13 +353,6 @@ def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap:
             continue
         
         lang = _detect_lang(markdown_text)
-        filetexts.append({
-            "doc_id": doc_id,
-            "source_path": path,
-            "file_ext": ext,
-            "lang": lang,
-            "content": markdown_text,
-        })
         
         # Always use markdown-aware chunking for better structure preservation
         para = _split_paragraphs_with_headings(markdown_text)
@@ -400,7 +392,7 @@ def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap:
             })
             
     print(f"[RAG] Universal loader done: total_chunks={len(chunks)}")
-    return chunks, filetexts
+    return chunks
 
 
 def build_graph_from_chunks(neo4j, chunks: List[Dict]) -> None:
@@ -1170,9 +1162,31 @@ def create_rag_pipeline(
             print(f"[WARNING] Failed to delete documents for user_id={user_id}: {e}")
             return False
 
+    def add_neo4j_document(file_paths: List[str], chunk_size: int = 1000, user_id: str = "default") -> bool:
+        """Add a document to Neo4j knowledge graph"""
+        chunks = load_and_chunk_texts(
+            paths=file_paths,
+            chunk_size=chunk_size,
+            chunk_overlap=0,
+            user_id=user_id,
+            source_label="kg"
+        )
+
+        if not chunks:
+            print("⚠️ 没有可处理的文本块")
+            return False
+        
+        try:
+            kg = Neo4jKGRAG_Enterprise(user_id=user_id)
+            kg.add_neo4j_document(chunks)  # 自动 UIE 抽取 + 入库
+            return True
+        except Exception as e:
+            print(f"❌ 知识图谱写入失败：{e}")
+            return False
+
     def add_documents(file_paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, user_id: str = "default") -> int:
         """Add documents to RAG pipeline"""
-        chunks, files = load_and_chunk_texts(
+        chunks = load_and_chunk_texts(
             paths=file_paths,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -1185,28 +1199,6 @@ def create_rag_pipeline(
             user_id=user_id
         )
 
-        try:
-            # 添加知识图谱
-            # 初始化图谱
-            if files:
-                for file in files:
-                    kg = Neo4jKGRAG_Enterprise(user_id=user_id)
-
-                    # 遍历所有 chunk 写入知识图谱
-                    chunk = chunks[0]
-                    item = {
-                        "id": chunk["id"],
-                        "content": file["content"],
-                        "metadata": {
-                            "doc_id": file["doc_id"]
-                        },
-                    }
-                    kg.write_chunk_to_kg(item)
-
-                    kg.close()
-
-        except Exception as e:
-            print(f"[WARNING] 知识图谱入库失败: {e}")
         return len(chunks)
     
     def search(query: str, top_k: int = 8, score_threshold: Optional[float] = None):
@@ -1247,7 +1239,9 @@ def create_rag_pipeline(
         "namespace": user_id,
         "add_documents": add_documents,
         "delete_document": delete_document,
+        "add_neo4j_document": add_neo4j_document,
         "search": search,
+        "_is_markitdown_supported_format": _is_markitdown_supported_format,
         "search_advanced": search_advanced,
         "get_stats": get_stats
     }

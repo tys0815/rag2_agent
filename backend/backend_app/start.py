@@ -3,15 +3,15 @@ import logging
 import uvicorn
 
 from consumer import run_consumer
+from redis_config import QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J
 
 import sys
 from pathlib import Path
-logger = logging.getLogger(__name__)
 
-ROOT_DIR = Path(__file__).parent.parent  # 自动定位到 backend 目录
+logger = logging.getLogger(__name__)
+ROOT_DIR = Path(__file__).parent.parent
 sys.path.append(str(ROOT_DIR))
 
-# 日志基础配置
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -26,28 +26,44 @@ def run_api():
         workers=1
     )
 
-# ------------------- 启动多个 RAG 消费者 -------------------
-def run_rag_consumers(count=3):
+# ------------------- 【核心】启动指定队列的 N 个消费者 -------------------
+def start_consumers(queue_name, count=1):
+    """
+    启动同一个队列的多个消费者进程
+    :param queue_name: 队列名
+    :param count: 启动几个消费者
+    :return: 进程列表
+    """
     processes = []
     for i in range(count):
-        p = multiprocessing.Process(target=run_consumer, name=f"RAG-Consumer-{i+1}")
+        p = multiprocessing.Process(
+            target=run_consumer,
+            args=(queue_name,),
+            name=f"Consumer-{queue_name}-{i+1}"
+        )
         p.start()
         processes.append(p)
-        logging.info(f"✅ RAG 消费者 %d 启动成功", i+1)
+        logging.info(f"✅ 启动消费者：{p.name}")
     return processes
 
-# ------------------- 主入口 -------------------
+# ------------------- 主入口：自由配置数量 -------------------
 if __name__ == "__main__":
-    logging.info("🚀 启动整个系统：API + 3 个 RAG 消费者")
-
     # 1. 启动 API
     p_api = multiprocessing.Process(target=run_api, name="API-Server")
     p_api.start()
 
-    # 2. 启动消费者
-    p_consumers = run_rag_consumers(count=3)
+    # 2. 启动多种消费者
+    all_processes = []
 
-    # 等待所有进程运行
+    # 启动 Qdrant 消费者 N 个
+    qdrant_procs = start_consumers(QUEUE_RAG_QDRANT, 1)
+    all_processes.extend(qdrant_procs)
+
+    # 启动 Neo4j 消费者 N 个
+    neo4j_procs = start_consumers(QUEUE_RAG_NEO4J, 1)
+    all_processes.extend(neo4j_procs)
+
+    # 等待所有
     p_api.join()
-    for p in p_consumers:
+    for p in all_processes:
         p.join()
