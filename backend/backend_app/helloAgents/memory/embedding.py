@@ -50,7 +50,7 @@ class LocalTransformerEmbedding(EmbeddingModel):
         # 优先 sentence-transformers
         try:
             from sentence_transformers import SentenceTransformer
-            self._st_model = SentenceTransformer(self.model_name)
+            self._st_model = SentenceTransformer(self.model_name, device="cuda")
             test_vec = self._st_model.encode("test_text")
             self._dimension = len(test_vec)
             self._backend = "st"

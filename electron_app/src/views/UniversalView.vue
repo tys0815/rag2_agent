@@ -46,7 +46,7 @@
     <!-- 输入区 -->
     <div class="border-t border-gray-200 p-4">
       <div class="max-w-3xl mx-auto">
-        <form @submit.prevent="sendMessage2" class="flex flex-col gap-3">
+        <form @submit.prevent="sendMessage" class="flex flex-col gap-3">
           <textarea
             v-model="messageInput"
             class="w-full border border-gray-200 rounded-lg p-3 min-h-[80px] focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-300 resize-none text-sm"

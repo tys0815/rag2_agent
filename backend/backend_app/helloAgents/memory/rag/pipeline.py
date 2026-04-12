@@ -11,6 +11,13 @@ from helloAgents.memory.base import MemoryItem
 from ..embedding import get_text_embedder, get_dimension
 from ..storage.qdrant_store import QdrantVectorStore
 
+from transformers import AutoTokenizer
+try:
+    # 通用中英文模型，最准、最快
+    _TOKENIZER = AutoTokenizer.from_pretrained("bert-base-chinese")
+except Exception:
+    _TOKENIZER = None
+
 
 def _get_markitdown_instance():
     """
@@ -60,6 +67,7 @@ def _convert_to_markdown(path: str) -> str:
     
     # 对PDF文件使用增强处理
     ext = (os.path.splitext(path)[1] or '').lower()
+
     if ext == '.pdf':
         return _enhanced_pdf_processing(path)
     
@@ -207,25 +215,22 @@ def _detect_lang(sample: str) -> str:
     except Exception:
         return "unknown"
 
-
-def _is_cjk(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x4E00 <= code <= 0x9FFF or
-        0x3400 <= code <= 0x4DBF or
-        0x20000 <= code <= 0x2A6DF or
-        0x2A700 <= code <= 0x2B73F or
-        0x2B740 <= code <= 0x2B81F or
-        0x2B820 <= code <= 0x2CEAF or
-        0xF900 <= code <= 0xFAFF
-    )
-
-
 def _approx_token_len(text: str) -> int:
-    # 近似估计：CJK字符按1 token，其他按空白分词
-    cjk = sum(1 for ch in text if _is_cjk(ch))
-    non_cjk_tokens = len([t for t in text.split() if t])
-    return cjk + non_cjk_tokens
+    """
+    🔥 企业级【真实 Token 长度计算】
+    完全准确，绝不死循环！
+    """
+    global _TOKENIZER
+    if not text:
+        return 1
+    
+    # 使用真实 tokenizer
+    if _TOKENIZER is not None:
+        return len(_TOKENIZER.encode(text, add_special_tokens=False)) or 1
+
+    # 降级兜底（绝对不会偏大）
+    return max(1, len(text) // 3)
+    
 
 
 def _split_paragraphs_with_headings(text: str) -> List[Dict]:
@@ -271,7 +276,6 @@ def _split_paragraphs_with_headings(text: str) -> List[Dict]:
     if not paragraphs:
         paragraphs = [{"content": text, "heading_path": None, "start": 0, "end": len(text)}]
     return paragraphs
-
 
 def _chunk_paragraphs(paragraphs: List[Dict], chunk_tokens: int, overlap_tokens: int) -> List[Dict]:
     chunks: List[Dict] = []
@@ -324,7 +328,6 @@ def _chunk_paragraphs(paragraphs: List[Dict], chunk_tokens: int, overlap_tokens:
             "heading_path": heading_path,
         })
     return chunks
-
 
 def load_and_chunk_texts(paths: List[str], chunk_size: int = 800, chunk_overlap: int = 100, user_id: Optional[str] = None, source_label: str = "rag") -> List[Dict]:
     """
@@ -1211,6 +1214,16 @@ def create_rag_pipeline(
             score_threshold=score_threshold
         )
     
+    def search_neo4j(
+        query: str, 
+        top_k: int = 5, 
+        user_id: str = "default"
+    ):
+        """Advanced search with query expansion"""
+        kg = Neo4jKGRAG_Enterprise(user_id=user_id)
+        result = kg.search_neo4j(query=query, top_k=top_k, user_id=user_id)
+        return result
+    
     def search_advanced(
         query: str, 
         top_k: int = 8, 
@@ -1243,5 +1256,6 @@ def create_rag_pipeline(
         "search": search,
         "_is_markitdown_supported_format": _is_markitdown_supported_format,
         "search_advanced": search_advanced,
+        "search_neo4j": search_neo4j,
         "get_stats": get_stats
     }

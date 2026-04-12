@@ -8,6 +8,7 @@ from redis_config import QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J
 import sys
 from pathlib import Path
 
+
 logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.append(str(ROOT_DIR))

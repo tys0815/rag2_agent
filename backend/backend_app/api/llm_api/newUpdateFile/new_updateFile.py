@@ -257,12 +257,12 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
     redis.rpush(QUEUE_RAG_QDRANT, json.dumps(task))
 
     # RAG neo4j 入库
-    task = {
+    task_neo4j = {
         "action": "add_neo4j_document",
         "file_path": saved_files,
         "user_id": user_id
     }
-    redis.rpush(QUEUE_RAG_NEO4J, json.dumps(task))
+    redis.rpush(QUEUE_RAG_NEO4J, json.dumps(task_neo4j))
 
     return {
         "success": True,

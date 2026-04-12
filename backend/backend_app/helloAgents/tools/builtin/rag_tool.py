@@ -19,6 +19,7 @@ answer = rag.run({"action": "ask", "question": "什么是机器学习？"})
 ```
 """
 
+import asyncio
 from typing import Dict, Any, List, Optional
 import os
 import time
@@ -58,8 +59,7 @@ class RAGTool(Tool):
     ):
         super().__init__(
             name="rag",
-            description="""RAG工具 - 企业内部知识库智能检索工具，用于查询公司制度、考勤、休假、报销、人事政策、开发文档、测试文档、内部流程等非公开信息。
-用户询问公司规则、请假流程、报销材料、考勤规定、内部文档时必须使用此工具。""",
+            description="""RAG工具 - 武侠小说人物关系等检索工具""",
             expandable=expandable
         )
 
@@ -444,7 +444,7 @@ class RAGTool(Tool):
                 return self._add_neo4j_document(
                     file_path=parameters.get("file_path"),
                     user_id=parameters.get("user_id", "default"),
-                    chunk_size=parameters.get("chunk_size", 1000)
+                    chunk_size=parameters.get("chunk_size", 450)
                 )
             elif action == "delete_document":
                 return self._delete_document(
@@ -701,6 +701,7 @@ class RAGTool(Tool):
             return f"❌ 添加文本失败: {str(e)}"
     
     @tool_action("rag_search", "搜索知识库中的相关内容")
+    # 同步版本，无 async，无 await，完美兼容你的代码
     def _search(
         self,
         query: str,
@@ -717,111 +718,69 @@ class RAGTool(Tool):
         vector_weight: float = 0.7,
         keyword_weight: float = 0.3
     ) -> str:
-        """搜索知识库
-
-        Args:
-            query: 搜索查询词
-            limit: 返回结果数量
-            min_score: 最低相关度分数
-            enable_advanced_search: 是否启用高级搜索（MQE、HyDE）
-            max_chars: 每个结果最大字符数
-            include_citations: 是否包含引用来源
-            user_id: 知识库命名空间
-            metadata_filters: 元数据过滤条件列表，支持复杂查询
-                格式示例：
-                [
-                    {"field": "source_path", "operator": "eq", "value": "document.pdf"},
-                    {"field": "lang", "operator": "eq", "value": "zh"},
-                    {"field": "start", "operator": "gte", "value": 100},
-                    {"field": "end", "operator": "lte", "value": 500},
-                    {"field": "file_ext", "operator": "in", "value": [".pdf", ".docx"]}
-                ]
-                支持的运算符：eq, ne, gt, gte, lt, lte, in, contains
-            enable_rerank: 是否启用结果重排序
-            reranker_model: 重排序模型名称
-            enable_hybrid_search: 是否启用混合搜索（向量+关键词）
-            vector_weight: 向量搜索权重（0.0-1.0）
-            keyword_weight: 关键词搜索权重（0.0-1.0）
-
-        Returns:
-            搜索结果
-        """
         try:
-            # if not query or not query.strip():
-            #     return "❌ 搜索查询不能为空"
-
-            # 生成缓存键
-            # cache_key = self._get_cache_key(
-            #     "search",
-            #     query=query,
-            #     limit=limit,
-            #     min_score=min_score,
-            #     enable_advanced_search=enable_advanced_search,
-            #     max_chars=max_chars,
-            #     include_citations=include_citations,
-            #     user_id=user_id,
-            #     metadata_filters=metadata_filters,
-            #     enable_rerank=enable_rerank,
-            #     reranker_model=reranker_model,
-            #     enable_hybrid_search=enable_hybrid_search,
-            #     vector_weight=vector_weight,
-            #     keyword_weight=keyword_weight
-            # )
-
-            # # 检查缓存
-            # cached_result = self._get_cached_result(cache_key)
-            # if cached_result is not None:
-            #     print(f"🔍 缓存命中: {query}")
-            #     return cached_result
-
-            # print(f"🔍 缓存未命中，执行搜索: {query}")
-
-            # 使用统一 RAG 管道搜索
             pipeline = self._get_pipeline(user_id)
 
-            if enable_hybrid_search:
-                # 混合搜索
-                results = pipeline["search_hybrid"](
+            # ===================== 同步多线程并行（无 await 版）=====================
+            from concurrent.futures import ThreadPoolExecutor
+
+            # 定义普通搜索函数
+            def run_normal_search():
+                if enable_hybrid_search:
+                    return pipeline["search_hybrid"](
+                        query=query,
+                        top_k=limit,
+                        score_threshold=min_score if min_score > 0 else None,
+                        vector_weight=vector_weight,
+                        keyword_weight=keyword_weight,
+                        enable_advanced_search=enable_advanced_search
+                    )
+                elif enable_advanced_search:
+                    return pipeline["search_advanced"](
+                        query=query,
+                        top_k=limit,
+                        enable_mqe=True,
+                        enable_hyde=True,
+                        score_threshold=min_score if min_score > 0 else None,
+                        user_id=user_id
+                    )
+                else:
+                    return pipeline["search"](
+                        query=query,
+                        top_k=limit,
+                        score_threshold=min_score if min_score > 0 else None
+                    )
+
+            # 定义 Neo4j 搜索函数
+            def run_neo4j_search():
+                return pipeline["search_neo4j"](
                     query=query,
                     top_k=limit,
-                    score_threshold=min_score if min_score > 0 else None,
-                    vector_weight=vector_weight,
-                    keyword_weight=keyword_weight,
-                    enable_advanced_search=enable_advanced_search
-                )
-            elif enable_advanced_search:
-                results = pipeline["search_advanced"](
-                    query=query,
-                    top_k=limit,
-                    enable_mqe=True,
-                    enable_hyde=True,
-                    score_threshold=min_score if min_score > 0 else None,
                     user_id=user_id
                 )
-            else:
-                results = pipeline["search"](
-                    query=query,
-                    top_k=limit,
-                    score_threshold=min_score if min_score > 0 else None
-                )
 
+            # 多线程并行执行（真正并行，无 async）
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_normal = executor.submit(run_normal_search)
+                future_neo4j = executor.submit(run_neo4j_search)
+
+                # 获取结果
+                results = future_normal.result()
+                results_neo4j = future_neo4j.result()
+
+            # ===================== 以下逻辑完全不变 =====================
             if not results:
-                # 缓存空结果
-                result = f"🔍 未找到与 '{query}' 相关的内容"
-                # self._set_cached_result(cache_key, result)
-                return result
+                return f"🔍 未找到与 '{query}' 相关的内容"
 
-            # 应用结果重排序
+            # 重排序
             if enable_rerank and results:
-                # 准备重排序数据
                 rerank_items = []
                 for res in results:
                     item = res.copy()
-                    # 确保有content字段
                     if "content" not in item:
                         item["content"] = item.get("metadata", {}).get("content", "")
                     rerank_items.append(item)
-                # 应用重排序
+
                 results = rerank_with_cross_encoder(
                     query=query,
                     items=rerank_items,
@@ -829,16 +788,14 @@ class RAGTool(Tool):
                     top_k=limit
                 )
 
-            # 格式化搜索结果
+            # 格式化结果
             search_result = ["搜索结果："]
             for i, result in enumerate(results, 1):
                 meta = result.get("metadata", {})
-                # 获取分数：优先使用hybrid_score（混合搜索），然后是rerank_score（重排序），最后是原始score
                 score = result.get("hybrid_score", result.get("rerank_score", result.get("score", 0.0)))
                 content = meta.get("content", "")[:200] + "..."
                 source = meta.get("source_path", "unknown")
 
-                # 安全处理Unicode
                 def clean_text(text):
                     try:
                         return str(text).encode('utf-8', errors='ignore').decode('utf-8')
@@ -848,7 +805,6 @@ class RAGTool(Tool):
                 clean_content = clean_text(content)
                 clean_source = clean_text(source)
 
-                # 构建分数显示字符串
                 score_display = f"相关度: {score:.3f}"
                 if enable_hybrid_search:
                     vector_score = result.get("vector_score", 0.0)
@@ -866,11 +822,8 @@ class RAGTool(Tool):
                     clean_heading = clean_text(str(meta['heading_path']))
                     search_result.append(f"   章节: {clean_heading}")
             
-            result = "\n".join(search_result)
-            # 缓存搜索结果
-            # self._set_cached_result(cache_key, result)
-            return result
-            
+            return "\n".join(search_result)
+
         except Exception as e:
             return f"❌ 搜索失败: {str(e)}"
 
