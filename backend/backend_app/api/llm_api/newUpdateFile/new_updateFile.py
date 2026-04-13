@@ -14,7 +14,7 @@ from helloAgents.tools.builtin.rag_tool import RAGTool
 from helloAgents.tools.builtin.memory_tool import MemoryTool
 from helloAgents.tools.registry import global_registry
 
-from redis_config import get_redis, QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J
+from redis_config import get_redis, QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J, QUEUE_MEMORY
 redis = get_redis()
 
 logger = logging.getLogger(__name__)
@@ -170,73 +170,29 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
     dup_files_list = "\n".join([f"- {d['filename']}" for d in duplicate_files])
     err_files_list = "\n".join([f"- {e['filename']} | 原因：{e['error']}" for e in save_errors])
 
-
-    # 全部记忆 → 丢进 AsyncToolExecutor 并行后台执行
-    # ============================
-    async def save_all_memories_in_background():
-        try:
-            tasks = []
-
-            # --------------------------
-            # 1)  episodic 上传总结记忆
-            # --------------------------
-            summary_content = f"""【文件上传总结】{now} | 用户：{user_id}
-    总文件数：{total}
-    ✅ 上传成功：{success_cnt} 个
-    {success_files if success_files else '无'}
-
-    ⚠️ 重复文件：{dup_cnt} 个
-    {dup_files_list if dup_files_list else '无'}
-
-    ❌ 上传失败：{fail_cnt} 个
-    {err_files_list if err_files_list else '无'}
-    """
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "user_id": user_id,
-                    "memory_type": "episodic",
-                    "content": summary_content.strip(),
-                    "importance": 0.8,
-                    "session_id": None
-                }
-            })
-
-            # --------------------------
-            # 2)  perceptual 多模态文件记忆
-            # --------------------------
-            for file in saved_files:
-                tasks.append({
-                    "tool_name": "memory",
-                    "input_data": {
-                        "action": "add",
-                        "user_id": user_id,
-                        "memory_type": "perceptual",
-                        "content": f"【多模态文件】{file['filename']} | 路径：{file['file_path']}",
-                        "file_path": file["file_path"],
-                        "importance": 0.7,
-                        "session_id": None
-                    }
-                })
-
-            # --------------------------
-            # 🔥 并行执行所有记忆保存（完全异步）
-            # --------------------------
-            executor = AsyncToolExecutor(global_registry, max_workers=5)
-            await executor.execute_tools_parallel(tasks)
-
-        except Exception as e:
-            logger.warning(f"后台记忆保存任务失败: {e}")
-
-    # --------------------------
-    # 提交后台 → 主流程完全不等待
-    # --------------------------
-    # asyncio.create_task(save_all_memories_in_background())
-
     # ============================
     # ✅ 记忆存储结束
     # ============================
+    summary_content = f"""【文件上传总结】{now} | 用户：{user_id}
+        总文件数：{total}
+        ✅ 上传成功：{success_cnt} 个
+        {success_files if success_files else '无'}
+
+        ⚠️ 重复文件：{dup_cnt} 个
+        {dup_files_list if dup_files_list else '无'}
+
+        ❌ 上传失败：{fail_cnt} 个
+        {err_files_list if err_files_list else '无'}
+        """
+    summary_tasks = {
+        "action": "add",
+        "user_id": user_id,
+        "memory_type": "episodic",
+        "content": summary_content.strip(),
+        "importance": 0.8,
+        "session_id": None
+    }
+    redis.rpush(QUEUE_MEMORY, json.dumps(summary_tasks))
 
     if not saved_files:
         return {
@@ -263,6 +219,7 @@ async def process_uploaded_files(files: List[UploadFile], user_id: str) -> dict:
         "user_id": user_id
     }
     redis.rpush(QUEUE_RAG_NEO4J, json.dumps(task_neo4j))
+
 
     return {
         "success": True,

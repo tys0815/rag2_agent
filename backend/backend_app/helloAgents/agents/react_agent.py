@@ -13,8 +13,9 @@ from helloAgents.tools.builtin.memory_tool import MemoryTool
 from ..core.agent import Agent
 from ..core.llm import HelloAgentsLLM
 from ..core.config import Config
-from ..core.message import Message
 from ..tools.registry import ToolRegistry
+from redis_config import get_redis, QUEUE_MEMORY
+redis = get_redis()
 
 # 默认 Hybrid ReAct 提示词模板（企业级干净版）
 DEFAULT_HYBRID_REACT_PROMPT = """你是一个具备深度推理和行动能力的企业级 AI 助手。
@@ -195,102 +196,76 @@ class ReActAgent(Agent):
     # =========================================================================
     # 四层记忆自动保存
     # =========================================================================
-    async def _auto_save_all_memories(self, user_input: str, final_answer: str, system_prompt: str, **kwargs):
-        try:
-            memory_tool: MemoryTool = self.tool_registry.get_tool("memory")
-            if not memory_tool:
-                return
+    def _auto_save_all_memories(self, user_input: str, final_answer: str, system_prompt: str, **kwargs):
+        # 工作记忆
+        work_tasks = {
+            "action": "add",
+            "user_content": user_input,
+            "assistant_content": final_answer,
+            "memory_type": "working",
+            "user_id": kwargs.get("user_id"),
+            "session_id": kwargs.get("session_id"),
+            "importance": 0.3
+        }
+        redis.lpush(QUEUE_MEMORY, json.dumps(work_tasks))
 
-            from ..tools.async_executor import AsyncToolExecutor
-            executor = AsyncToolExecutor(self.tool_registry, max_workers=3)
-            tasks = []
+        # 语义记忆
+        semantic_tasks = {
+            "action": "add",
+            "content": user_input,
+            "memory_type": "semantic",
+            "user_id": kwargs.get("user_id"),
+            "session_id": None,
+            "importance": 0.8
+        }
+        redis.lpush(QUEUE_MEMORY, json.dumps(semantic_tasks))
 
-            # 工作记忆
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "user_content": user_input,
-                    "assistant_content": final_answer,
-                    "memory_type": "working",
-                    "user_id": kwargs.get("user_id"),
-                    "session_id": kwargs.get("session_id"),
-                    "importance": 0.3
-                }
-            })
+        # 事件记忆
+        episodic_tasks = {
+            "action": "add",
+            "role": "user",
+            "content": user_input,
+            "memory_type": "episodic",
+            "user_id": kwargs.get("user_id"),
+            "session_id": kwargs.get("session_id"),
+            "importance": 0.5
+        }
+        redis.lpush(QUEUE_MEMORY, json.dumps(episodic_tasks))
 
-            # 语义记忆
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "content": user_input,
-                    "memory_type": "semantic",
-                    "user_id": kwargs.get("user_id"),
-                    "session_id": None,
-                    "importance": 0.8
-                }
-            })
+        episodic_answer_tasks = {
+            "action": "add",
+            "role": "assistant",
+            "content": final_answer,
+            "memory_type": "episodic",
+            "user_id": kwargs.get("user_id"),
+            "session_id": kwargs.get("session_id"),
+            "importance": 0.5
+        }
+        redis.lpush(QUEUE_MEMORY, json.dumps(episodic_answer_tasks))
 
-            # 事件记忆
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "role": "user",
-                    "content": user_input,
-                    "memory_type": "episodic",
-                    "user_id": kwargs.get("user_id"),
-                    "session_id": kwargs.get("session_id"),
-                    "importance": 0.5
-                }
-            })
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "role": "assistant",
-                    "content": final_answer,
-                    "memory_type": "episodic",
-                    "user_id": kwargs.get("user_id"),
-                    "session_id": kwargs.get("session_id"),
-                    "importance": 0.5
-                }
-            })
+        episodic_observation_tasks = {
+            "action": "add",
+            "role": "observation",
+            "content": system_prompt,
+            "memory_type": "episodic",
+            "user_id": kwargs.get("user_id"),
+            "session_id": kwargs.get("session_id"),
+            "importance": 0.5
+        }
+        redis.lpush(QUEUE_MEMORY, json.dumps(episodic_observation_tasks))
 
-            tasks.append({
-                "tool_name": "memory",
-                "input_data": {
-                    "action": "add",
-                    "role": "observation",
-                    "content": system_prompt,
-                    "memory_type": "episodic",
-                    "user_id": kwargs.get("user_id"),
-                    "session_id": kwargs.get("session_id"),
-                    "importance": 0.5
-                }
-            })
-
-            summary = self._extract_summary_by_llm(user_input, final_answer, **kwargs)
-            if summary:
-                tasks.append({
-                    "tool_name": "memory",
-                    "input_data": {
-                        "action": "add",
-                        "role": "summary",
-                        "content": summary,
-                        "memory_type": "episodic",
-                        "user_id": kwargs.get("user_id"),
-                        "session_id": kwargs.get("session_id"),
-                        "importance": 0.5
-                    }
-                })
-
-
-            await executor.execute_tools_parallel(tasks)
-        except Exception:
-            import traceback
-            traceback.print_exc()
+        summary = self._extract_summary_by_llm(user_input, final_answer, **kwargs)
+        if summary:
+            summary_tasks = {
+                "action": "add",
+                "role": "summary",
+                "content": summary,
+                "memory_type": "episodic",
+                "user_id": kwargs.get("user_id"),
+                "session_id": kwargs.get("session_id"),
+                "importance": 0.5
+            }
+            redis.lpush(QUEUE_MEMORY, json.dumps(summary_tasks))
 
     def _extract_summary_by_llm(self, user_input: str, final_answer: str, **kwargs) -> str:
         """
@@ -464,13 +439,7 @@ class ReActAgent(Agent):
 
         # 异步保存记忆
         try:
-            task = asyncio.create_task(self._auto_save_all_memories(input_text, final_answer, system_prompt, **kwargs))
-            def cb(t): 
-                try: 
-                    t.result()
-                except Exception as e: 
-                    print(f"⚠️ 记忆保存异常：{e}")
-            task.add_done_callback(cb)
+           self._auto_save_all_memories(input_text, final_answer, system_prompt, **kwargs)
         except Exception:
             pass
 

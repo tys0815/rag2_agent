@@ -3,7 +3,7 @@ import logging
 import uvicorn
 
 from consumer import run_consumer
-from redis_config import QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J
+from redis_config import QUEUE_RAG_QDRANT, QUEUE_RAG_NEO4J, QUEUE_MEMORY
 
 import sys
 from pathlib import Path
@@ -63,6 +63,10 @@ if __name__ == "__main__":
     # 启动 Neo4j 消费者 N 个
     neo4j_procs = start_consumers(QUEUE_RAG_NEO4J, 1)
     all_processes.extend(neo4j_procs)
+
+    # 启动 Memory 消费者 N 个
+    memory_procs = start_consumers(QUEUE_MEMORY, 1)
+    all_processes.extend(memory_procs)
 
     # 等待所有
     p_api.join()
