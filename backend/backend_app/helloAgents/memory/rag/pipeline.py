@@ -1,13 +1,11 @@
-from datetime import datetime
+
 from typing import List, Dict, Optional, Any
 import os
 import hashlib
-import sqlite3
-import time
-import json
 
+from helloAgents.memory.storage.document_store import SQLiteDocumentStore
 from helloAgents.memory.storage.kg_rag import Neo4jKGRAG_Enterprise
-from helloAgents.memory.base import MemoryItem
+
 from ..embedding import get_text_embedder, get_dimension
 from ..storage.qdrant_store import QdrantVectorStore
 
@@ -1201,6 +1199,13 @@ def create_rag_pipeline(
             chunks=chunks,
             user_id=user_id
         )
+
+
+        os.makedirs("./memory_data", exist_ok=True)
+        db_path = os.path.join("./memory_data", "memory.db")
+        doc_store = SQLiteDocumentStore(db_path=db_path)
+        for path in file_paths:
+            doc_store.add_document_chunk(path["hash"],chunks)
 
         return len(chunks)
     

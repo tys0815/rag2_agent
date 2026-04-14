@@ -152,6 +152,39 @@ class SQLiteDocumentStore(DocumentStore):
             )
         """)
 
+        # 1. 文档表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                content TEXT,           
+                metadata TEXT,        
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 2. 分块表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL, 
+                chunk_index INTEGER,   
+                metadata TEXT,         
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 3. ✅ 多对多关系表（核心）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS document_chunk (
+                document_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                PRIMARY KEY (document_id, chunk_id),
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+            )
+        """)
+
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories (user_id)",
             "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories (memory_type)",
@@ -206,6 +239,27 @@ class SQLiteDocumentStore(DocumentStore):
         except Exception as e:
             print(f"[ERROR] add_memory 失败: {str(e)}")
             raise
+        
+    def add_document_chunk(self, document_id:str, chunk_ids:list[any]):
+        if not chunk_ids:
+            return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 构造多条 (doc_id, chunk_id)
+        data = [(document_id, chunk_id["metadata"]["content_hash"]) for chunk_id in chunk_ids]
+
+        try:
+            cursor.executemany("""
+                INSERT OR IGNORE INTO document_chunk (document_id, chunk_id)
+                VALUES (?, ?)
+            """, data)
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"绑定失败: {e}")
+            return False
 
     def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
         conn = self._get_connection()
