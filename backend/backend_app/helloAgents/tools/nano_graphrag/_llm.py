@@ -4,7 +4,7 @@ from typing import Optional, List, Any, Callable
 
 import aioboto3
 from openai import AsyncOpenAI, AsyncAzureOpenAI, APIConnectionError, RateLimitError
-
+from helloAgents.core.llm import HelloAgentsLLM
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -161,6 +161,13 @@ async def gpt_4o_complete(
         history_messages=history_messages,
         **kwargs,
     )
+
+async def llm_complete(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+
+    llm = HelloAgentsLLM()
+    return await llm.invoke(messages=history_messages,**kwargs)
 
 
 async def gpt_4o_mini_complete(
