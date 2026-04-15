@@ -1,11 +1,11 @@
 
 from fastapi import APIRouter
 
-from backend_app.api.llm_api.newUpdateFile.new_updateFile import new_updateFile_router
-from backend_app.api.llm_api.universal.universal_router import universal_router
-from backend_app.api.llm_api.ingest.ingest import ingest_router
-from backend_app.api.voice.voice_router import voice_router
-from backend_app.api.video.video_router import video_router
+from api.llm_api.newUpdateFile.new_updateFile import new_updateFile_router
+from api.llm_api.universal.universal_router import universal_router
+from api.llm_api.ingest.ingest import ingest_router
+from api.voice.voice_router import voice_router
+from api.video.video_router import video_router
 
 api_router = APIRouter()
 

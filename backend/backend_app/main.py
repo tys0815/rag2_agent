@@ -234,7 +234,7 @@ app = FastAPI(
 # ---------------------- 导入并注册已有路由 ----------------------
 # 你的上传/查询接口都在这个路由中，保持原有逻辑不变
 try:
-    from backend_app.api.api_router import api_router
+    from api.api_router import api_router
     app.include_router(router=api_router, prefix='/api/v1')
     logger.info("✅ 已注册API路由: /api/v1")
 except ImportError as e:

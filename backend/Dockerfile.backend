@@ -1,52 +1,18 @@
-# 阶段1：构建阶段（仅处理依赖安装，用完即弃）
-FROM python:3.11.4-slim AS builder
+# Hugging Face 官方标准格式 —— 必须这样写
+FROM python:3.11-slim
 
-# 设置环境变量（避免生成.pyc、实时输出日志、Poetry禁用虚拟环境）
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_CACHE_DIR=/tmp/poetry-cache
-
-# 设置工作目录
+# 固定配置
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
 WORKDIR /app
 
-# 安装系统构建依赖（仅用于编译Python依赖，如cryptography）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*  
+# 安装依赖
+COPY --chown=user ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
-# 安装Poetry（指定版本，使用--no-cache-dir避免pip缓存）
-RUN pip install --no-cache-dir poetry==1.8.3
+# 复制代码
+COPY --chown=user . /app
 
-# 配置Poetry使用清华源（加速依赖下载，二选一：也可在pyproject.toml中配置）
-RUN poetry config repositories.default https://pypi.tuna.tsinghua.edu.cn/simple/
-
-# 复制Poetry配置文件（本地提前生成poetry.lock，避免构建时生成）
-COPY pyproject.toml poetry.lock* ./
-
-# 安装依赖：仅安装生产依赖（--only main），不安装项目本身，不生成lock文件
-# 注意：生产环境必须确保本地有poetry.lock，否则构建失败（强制规范流程）
-RUN poetry install --no-root --no-interaction --no-ansi --only main
-
-# 阶段2：运行阶段（轻量级，仅保留运行时必需文件）
-FROM python:3.11.4-slim
-
-# 继承环境变量（运行时仍需禁用.pyc和实时日志）
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app/src
-
-# 设置工作目录
-WORKDIR /app
-
-# 从构建阶段复制仅有的运行时依赖（核心：丢弃构建工具，只保留依赖）
-COPY --from=builder /usr/local/lib/python3.13/site-packages/ /usr/local/lib/python3.13/site-packages/
-COPY --from=builder /usr/local/bin/ /usr/local/bin/
-
-# 复制编译后的项目代码（保持src目录结构，与启动路径匹配）
-COPY backend/backend_app /app/src/backend_app
-
-# 暴露端口（仅声明，不实际映射）
-EXPOSE 8000
-
-# 启动命令（与项目结构匹配：src/app/main.py中的app实例）
-CMD ["uvicorn", "src.backend_app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 必须端口 7860
+CMD ["uvicorn", "backend.backend_app.main:app", "--host", "0.0.0.0", "--port", "7860"]
